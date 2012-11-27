@@ -6,6 +6,7 @@
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/mm.h>
 #include <linux/list_lru.h>
 
 int
@@ -13,14 +14,19 @@ list_lru_add(
 	struct list_lru	*lru,
 	struct list_head *item)
 {
-	spin_lock(&lru->lock);
+	int nid = page_to_nid(virt_to_page(item));
+	struct list_lru_node *nlru = &lru->node[nid];
+
+	spin_lock(&nlru->lock);
+	BUG_ON(nlru->nr_items < 0);
 	if (list_empty(item)) {
-		list_add_tail(item, &lru->list);
-		lru->nr_items++;
-		spin_unlock(&lru->lock);
+		list_add_tail(item, &nlru->list);
+		if (nlru->nr_items++ == 0)
+			node_set(nid, lru->active_nodes);
+		spin_unlock(&nlru->lock);
 		return 1;
 	}
-	spin_unlock(&lru->lock);
+	spin_unlock(&nlru->lock);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(list_lru_add);
@@ -30,41 +36,69 @@ list_lru_del(
 	struct list_lru	*lru,
 	struct list_head *item)
 {
-	spin_lock(&lru->lock);
+	int nid = page_to_nid(virt_to_page(item));
+	struct list_lru_node *nlru = &lru->node[nid];
+
+	spin_lock(&nlru->lock);
 	if (!list_empty(item)) {
 		list_del_init(item);
-		lru->nr_items--;
-		spin_unlock(&lru->lock);
+		if (--nlru->nr_items == 0)
+			node_clear(nid, lru->active_nodes);
+		BUG_ON(nlru->nr_items < 0);
+		spin_unlock(&nlru->lock);
 		return 1;
 	}
-	spin_unlock(&lru->lock);
+	spin_unlock(&nlru->lock);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(list_lru_del);
 
 unsigned long
-list_lru_walk(
-	struct list_lru *lru,
-	list_lru_walk_cb isolate,
-	void		*cb_arg,
-	unsigned long	nr_to_walk)
+list_lru_count(struct list_lru *lru)
 {
-	struct list_head *item, *n;
-	unsigned long removed = 0;
+	long count = 0;
+	int nid;
 
-	spin_lock(&lru->lock);
-	list_for_each_safe(item, n, &lru->list) {
+	for_each_node_mask(nid, lru->active_nodes) {
+		struct list_lru_node *nlru = &lru->node[nid];
+
+		spin_lock(&nlru->lock);
+		BUG_ON(nlru->nr_items < 0);
+		count += nlru->nr_items;
+		spin_unlock(&nlru->lock);
+	}
+
+	return count;
+}
+EXPORT_SYMBOL_GPL(list_lru_count);
+
+static unsigned long
+list_lru_walk_node(
+	struct list_lru		*lru,
+	int			nid,
+	list_lru_walk_cb	isolate,
+	void			*cb_arg,
+	unsigned long		*nr_to_walk)
+{
+	struct list_lru_node	*nlru = &lru->node[nid];
+	struct list_head *item, *n;
+	unsigned long isolated = 0;
+
+	spin_lock(&nlru->lock);
+	list_for_each_safe(item, n, &nlru->list) {
 		enum lru_status ret;
 		bool first_pass = true;
 restart:
-		ret = isolate(item, &lru->lock, cb_arg);
+		ret = isolate(item, &nlru->lock, cb_arg);
 		switch (ret) {
 		case LRU_REMOVED:
-			lru->nr_items--;
-			removed++;
+			if (--nlru->nr_items == 0)
+				node_clear(nid, lru->active_nodes);
+			BUG_ON(nlru->nr_items < 0);
+			isolated++;
 			break;
 		case LRU_ROTATE:
-			list_move_tail(item, &lru->list);
+			list_move_tail(item, &nlru->list);
 			break;
 		case LRU_SKIP:
 			break;
@@ -77,46 +111,93 @@ restart:
 			BUG();
 		}
 
-		if (nr_to_walk-- == 0)
+		if ((*nr_to_walk)-- == 0)
 			break;
 
 	}
-	spin_unlock(&lru->lock);
-	return removed;
+	spin_unlock(&nlru->lock);
+	return isolated;
+}
+
+unsigned long
+list_lru_walk(
+	struct list_lru	*lru,
+	list_lru_walk_cb isolate,
+	void		*cb_arg,
+	unsigned long	nr_to_walk)
+{
+	long isolated = 0;
+	int nid;
+
+	for_each_node_mask(nid, lru->active_nodes) {
+		isolated += list_lru_walk_node(lru, nid, isolate,
+					       cb_arg, &nr_to_walk);
+		if (nr_to_walk <= 0)
+			break;
+	}
+	return isolated;
 }
 EXPORT_SYMBOL_GPL(list_lru_walk);
 
-unsigned long
-list_lru_dispose_all(
-	struct list_lru *lru,
-	list_lru_dispose_cb dispose)
+static unsigned long
+list_lru_dispose_all_node(
+	struct list_lru		*lru,
+	int			nid,
+	list_lru_dispose_cb	dispose)
 {
-	unsigned long disposed = 0;
+	struct list_lru_node	*nlru = &lru->node[nid];
 	LIST_HEAD(dispose_list);
+	unsigned long disposed = 0;
 
-	spin_lock(&lru->lock);
-	while (!list_empty(&lru->list)) {
-		list_splice_init(&lru->list, &dispose_list);
-		disposed += lru->nr_items;
-		lru->nr_items = 0;
-		spin_unlock(&lru->lock);
+	spin_lock(&nlru->lock);
+	while (!list_empty(&nlru->list)) {
+		list_splice_init(&nlru->list, &dispose_list);
+		disposed += nlru->nr_items;
+		nlru->nr_items = 0;
+		node_clear(nid, lru->active_nodes);
+		spin_unlock(&nlru->lock);
 
 		dispose(&dispose_list);
 
-		spin_lock(&lru->lock);
+		spin_lock(&nlru->lock);
 	}
-	spin_unlock(&lru->lock);
+	spin_unlock(&nlru->lock);
 	return disposed;
+}
+
+unsigned long
+list_lru_dispose_all(
+	struct list_lru		*lru,
+	list_lru_dispose_cb	dispose)
+{
+	unsigned long disposed;
+	unsigned long total = 0;
+	int nid;
+
+	do {
+		disposed = 0;
+		for_each_node_mask(nid, lru->active_nodes) {
+			disposed += list_lru_dispose_all_node(lru, nid,
+							      dispose);
+		}
+		total += disposed;
+	} while (disposed != 0);
+
+	return total;
 }
 
 int
 list_lru_init(
 	struct list_lru	*lru)
 {
-	spin_lock_init(&lru->lock);
-	INIT_LIST_HEAD(&lru->list);
-	lru->nr_items = 0;
+	int i;
 
+	nodes_clear(lru->active_nodes);
+	for (i = 0; i < MAX_NUMNODES; i++) {
+		spin_lock_init(&lru->node[i].lock);
+		INIT_LIST_HEAD(&lru->node[i].list);
+		lru->node[i].nr_items = 0;
+	}
 	return 0;
 }
 EXPORT_SYMBOL_GPL(list_lru_init);
