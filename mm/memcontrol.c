@@ -3162,16 +3162,19 @@ int memcg_update_cache_sizes(struct mem_cgroup *memcg)
 	 */
 	memcg_kmem_set_activated(memcg);
 
-	ret = memcg_update_all_caches(num+1);
+	/*
+	 * We have to make absolutely sure that we update the LRUs before we
+	 * update the caches. Once the caches are updated, they will be able to
+	 * start hosting objects. If a cache is created very quickly, and and
+	 * element is used and disposed to the LRU quickly as well, we may end
+	 * up with a NULL pointer in list_lru_add because the lists are not yet
+	 * ready.
+	 */
+	ret = memcg_update_all_lrus(num + 1);
 	if (ret)
 		goto out;
 
-	/*
-	 * We should make sure that the array size is not updated until we are
-	 * done; otherwise we have no easy way to know whether or not we should
-	 * grow the array.
-	 */
-	ret = memcg_update_all_lrus(num + 1);
+	ret = memcg_update_all_caches(num+1);
 	if (ret)
 		goto out;
 
@@ -3320,7 +3323,7 @@ int memcg_kmem_update_lru_size(struct list_lru *lru, int num_groups,
 		}
 
 		for (i = 0; lru->memcg_lrus && (i < num_memcgs); i++) {
-			if (lru->memcg_lrus && lru->memcg_lrus[i])
+			if (lru->memcg_lrus && !lru->memcg_lrus[i])
 				continue;
 			new_lru_array[i] =  lru->memcg_lrus[i];
 		}
@@ -3333,9 +3336,15 @@ int memcg_kmem_update_lru_size(struct list_lru *lru, int num_groups,
 		 * either follow the new array or the old one and they contain
 		 * exactly the same information. The new space in the end is
 		 * always empty anyway.
+		 *
+		 * We do have to make sure that no more users of the old
+		 * memcg_lrus array exist before we free, and this is achieved
+		 * by rcu. Since it would be too slow to synchronize RCU for
+		 * every LRU, we store the pointer and let the LRU code free
+		 * all of them when all LRUs are updated.
 		 */
 		if (lru->memcg_lrus)
-			kfree(old_array);
+			lru->old_array = old_array;
 	}
 
 	if (lru->memcg_lrus) {
@@ -3477,6 +3486,22 @@ static inline void memcg_resume_kmem_account(void)
 {
 	VM_BUG_ON(!current->mm);
 	current->memcg_kmem_skip_account--;
+}
+
+struct mem_cgroup *mem_cgroup_from_kmem_page(struct page *page)
+{
+	struct page_cgroup *pc;
+	struct mem_cgroup *memcg = NULL;
+
+	pc = lookup_page_cgroup(page);
+	if (!PageCgroupUsed(pc))
+		return NULL;
+
+	lock_page_cgroup(pc);
+	if (PageCgroupUsed(pc))
+		memcg = pc->mem_cgroup;
+	unlock_page_cgroup(pc);
+	return memcg;
 }
 
 static void kmem_cache_destroy_work_func(struct work_struct *w)
