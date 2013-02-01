@@ -24,6 +24,23 @@ struct list_lru_node {
 	long			nr_items;
 } ____cacheline_aligned_in_smp;
 
+/*
+ * This is supposed to be M x N matrix, where M is kmem-limited memcg, and N is
+ * the number of nodes. Both dimensions are likely to be very small, but are
+ * potentially very big. Therefore we will allocate or grow them dynamically.
+ *
+ * The size of M will increase as new memcgs appear and can be 0 if no memcgs
+ * are being used. This is done in mm/memcontrol.c in a way quite similar than
+ * the way we use for the slab cache management.
+ *
+ * The size o N can't be determined at compile time, but won't increase once we
+ * determine it. It is nr_node_ids, the firmware-provided maximum number of
+ * nodes in a system.
+ */
+struct list_lru_array {
+	struct list_lru_node node[1];
+};
+
 struct list_lru {
 	/*
 	 * Because we use a fixed-size array, this struct can be very big if
@@ -37,9 +54,38 @@ struct list_lru {
 	 */
 	struct list_lru_node	node[MAX_NUMNODES];
 	nodemask_t		active_nodes;
+#ifdef CONFIG_MEMCG_KMEM
+	/* All memcg-aware LRUs will be chained in the lrus list */
+	struct list_head	lrus;
+	/* M x N matrix as described above */
+	struct list_lru_array	**memcg_lrus;
+#endif
 };
 
-int list_lru_init(struct list_lru *lru);
+struct mem_cgroup;
+#ifdef CONFIG_MEMCG_KMEM
+struct list_lru_array *lru_alloc_array(void);
+int memcg_update_all_lrus(unsigned long num);
+void memcg_destroy_all_lrus(struct mem_cgroup *memcg);
+void list_lru_destroy(struct list_lru *lru);
+int __memcg_init_lru(struct list_lru *lru);
+#else
+static inline void list_lru_destroy(struct list_lru *lru)
+{
+}
+#endif
+
+int __list_lru_init(struct list_lru *lru, bool memcg_enabled);
+static inline int list_lru_init(struct list_lru *lru)
+{
+	return __list_lru_init(lru, false);
+}
+
+static inline int list_lru_init_memcg(struct list_lru *lru)
+{
+	return __list_lru_init(lru, true);
+}
+
 int list_lru_add(struct list_lru *lru, struct list_head *item);
 int list_lru_del(struct list_lru *lru, struct list_head *item);
 

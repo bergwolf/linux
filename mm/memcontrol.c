@@ -3163,16 +3163,30 @@ int memcg_update_cache_sizes(struct mem_cgroup *memcg)
 	memcg_kmem_set_activated(memcg);
 
 	ret = memcg_update_all_caches(num+1);
-	if (ret) {
-		ida_simple_remove(&kmem_limited_groups, num);
-		memcg_kmem_clear_activated(memcg);
-		return ret;
-	}
+	if (ret)
+		goto out;
+
+	/*
+	 * We should make sure that the array size is not updated until we are
+	 * done; otherwise we have no easy way to know whether or not we should
+	 * grow the array.
+	 */
+	ret = memcg_update_all_lrus(num + 1);
+	if (ret)
+		goto out;
 
 	memcg->kmemcg_id = num;
+
+	memcg_update_array_size(num + 1);
+
 	INIT_LIST_HEAD(&memcg->memcg_slab_caches);
 	mutex_init(&memcg->slab_caches_mutex);
+
 	return 0;
+out:
+	ida_simple_remove(&kmem_limited_groups, num);
+	memcg_kmem_clear_activated(memcg);
+	return ret;
 }
 
 static size_t memcg_caches_array_size(int num_groups)
@@ -3252,6 +3266,129 @@ int memcg_update_cache_size(struct kmem_cache *s, int num_groups)
 		kfree(cur_params);
 	}
 	return 0;
+}
+
+/*
+ * memcg_kmem_update_lru_size - fill in kmemcg info into a list_lru
+ *
+ * @lru: the lru we are operating with
+ * @num_groups: how many kmem-limited cgroups we have
+ * @new_lru: true if this is a new_lru being created, false if this
+ * was triggered from the memcg side
+ *
+ * Returns 0 on success, and an error code otherwise.
+ *
+ * This function can be called either when a new kmem-limited memcg appears,
+ * or when a new list_lru is created. The work is roughly the same in two cases,
+ * but in the later we never have to expand the array size.
+ *
+ * This is always protected by the all_lrus_mutex from the list_lru side.  But
+ * a race can still exists if a new memcg becomes kmem limited at the same time
+ * that we are registering a new memcg. Creation is protected by the
+ * memcg_mutex, so the creation of a new lru have to be protected by that as
+ * well.
+ *
+ * The lock ordering is that the memcg_mutex needs to be acquired before the
+ * lru-side mutex.
+ */
+int memcg_kmem_update_lru_size(struct list_lru *lru, int num_groups,
+			       bool new_lru)
+{
+	struct list_lru_array **new_lru_array;
+	struct list_lru_array *lru_array;
+
+	lru_array = lru_alloc_array();
+	if (!lru_array)
+		return -ENOMEM;
+
+	/*
+	 * When a new LRU is created, we still need to update all data for that
+	 * LRU. The procedure for late LRUs and new memcgs are quite similar, we
+	 * only need to make sure we get into the loop even if num_groups <
+	 * memcg_limited_groups_array_size.
+	 */
+	if ((num_groups > memcg_limited_groups_array_size) || new_lru) {
+		int i;
+		struct list_lru_array **old_array;
+		size_t size = memcg_caches_array_size(num_groups);
+		int num_memcgs = memcg_limited_groups_array_size;
+
+		new_lru_array = kzalloc(size * sizeof(void *), GFP_KERNEL);
+		if (!new_lru_array) {
+			kfree(lru_array);
+			return -ENOMEM;
+		}
+
+		for (i = 0; lru->memcg_lrus && (i < num_memcgs); i++) {
+			if (lru->memcg_lrus && lru->memcg_lrus[i])
+				continue;
+			new_lru_array[i] =  lru->memcg_lrus[i];
+		}
+
+		old_array = lru->memcg_lrus;
+		lru->memcg_lrus = new_lru_array;
+		/*
+		 * We don't need a barrier here because we are just copying
+		 * information over. Anybody operating in memcg_lrus will
+		 * either follow the new array or the old one and they contain
+		 * exactly the same information. The new space in the end is
+		 * always empty anyway.
+		 */
+		if (lru->memcg_lrus)
+			kfree(old_array);
+	}
+
+	if (lru->memcg_lrus) {
+		lru->memcg_lrus[num_groups - 1] = lru_array;
+		/*
+		 * Here we do need the barrier, because of the state transition
+		 * implied by the assignment of the array. All users should be
+		 * able to see it
+		 */
+		wmb();
+	}
+	return 0;
+}
+
+/*
+ * This is called with the LRU-mutex being held.
+ */
+int memcg_new_lru(struct list_lru *lru)
+{
+	struct mem_cgroup *iter;
+
+	if (!memcg_kmem_enabled())
+		return 0;
+
+	for_each_mem_cgroup(iter) {
+		int ret;
+		int memcg_id = memcg_cache_id(iter);
+		if (memcg_id < 0)
+			continue;
+
+		ret = memcg_kmem_update_lru_size(lru, memcg_id + 1, true);
+		if (ret) {
+			mem_cgroup_iter_break(root_mem_cgroup, iter);
+			return ret;
+		}
+	}
+	return 0;
+}
+
+/*
+ * We need to call back and forth from memcg to LRU because of the lock
+ * ordering.  This complicates the flow a little bit, but since the memcg mutex
+ * is held through the whole duration of memcg creation, we need to hold it
+ * before we hold the LRU-side mutex in the case of a new list creation as
+ * well.
+ */
+int memcg_init_lru(struct list_lru *lru)
+{
+	int ret;
+	mutex_lock(&memcg_create_mutex);
+	ret = __memcg_init_lru(lru);
+	mutex_unlock(&memcg_create_mutex);
+	return ret;
 }
 
 int memcg_register_cache(struct mem_cgroup *memcg, struct kmem_cache *s,
@@ -6063,8 +6200,10 @@ static void kmem_cgroup_destroy(struct mem_cgroup *memcg)
 	 * possible that the charges went down to 0 between mark_dead and the
 	 * res_counter read, so in that case, we don't need the put
 	 */
-	if (memcg_kmem_test_and_clear_dead(memcg))
+	if (memcg_kmem_test_and_clear_dead(memcg)) {
+		memcg_destroy_all_lrus(memcg);
 		mem_cgroup_put(memcg);
+	}
 }
 #else
 static int memcg_init_kmem(struct mem_cgroup *memcg, struct cgroup_subsys *ss)

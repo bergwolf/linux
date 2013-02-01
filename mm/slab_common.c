@@ -102,7 +102,6 @@ int memcg_update_all_caches(int num_memcgs)
 			goto out;
 	}
 
-	memcg_update_array_size(num_memcgs);
 out:
 	mutex_unlock(&slab_mutex);
 	return ret;

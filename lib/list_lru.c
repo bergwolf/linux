@@ -2,12 +2,17 @@
  * Copyright (c) 2010-2012 Red Hat, Inc. All rights reserved.
  * Author: David Chinner
  *
+ * Memcg Awareness
+ * Copyright (C) 2013 Parallels Inc.
+ * Author: Glauber Costa
+ *
  * Generic LRU infrastructure
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mm.h>
 #include <linux/list_lru.h>
+#include <linux/memcontrol.h>
 
 int
 list_lru_add(
@@ -163,18 +168,97 @@ list_lru_dispose_all(
 	return total;
 }
 
-int
-list_lru_init(
-	struct list_lru	*lru)
+/*
+ * This protects the list of all LRU in the system. One only needs
+ * to take when registering an LRU, or when duplicating the list of lrus.
+ * Transversing an LRU can and should be done outside the lock
+ */
+static DEFINE_MUTEX(all_memcg_lrus_mutex);
+static LIST_HEAD(all_memcg_lrus);
+
+static void list_lru_init_one(struct list_lru_node *lru)
+{
+	spin_lock_init(&lru->lock);
+	INIT_LIST_HEAD(&lru->list);
+	lru->nr_items = 0;
+}
+
+struct list_lru_array *lru_alloc_array(void)
+{
+	struct list_lru_array *lru_array;
+	int i;
+
+	lru_array = kzalloc(nr_node_ids * sizeof(struct list_lru_node),
+				GFP_KERNEL);
+	if (!lru_array)
+		return NULL;
+
+	for (i = 0; i < nr_node_ids; i++)
+		list_lru_init_one(&lru_array->node[i]);
+
+	return lru_array;
+}
+
+#ifdef CONFIG_MEMCG_KMEM
+int __memcg_init_lru(struct list_lru *lru)
+{
+	int ret;
+
+	INIT_LIST_HEAD(&lru->lrus);
+	mutex_lock(&all_memcg_lrus_mutex);
+	list_add(&lru->lrus, &all_memcg_lrus);
+	ret = memcg_new_lru(lru);
+	mutex_unlock(&all_memcg_lrus_mutex);
+	return ret;
+}
+
+int memcg_update_all_lrus(unsigned long num)
+{
+	int ret = 0;
+	struct list_lru *lru;
+
+	mutex_lock(&all_memcg_lrus_mutex);
+	list_for_each_entry(lru, &all_memcg_lrus, lrus) {
+		ret = memcg_kmem_update_lru_size(lru, num, false);
+		if (ret)
+			goto out;
+	}
+out:
+	mutex_unlock(&all_memcg_lrus_mutex);
+	return ret;
+}
+
+void list_lru_destroy(struct list_lru *lru)
+{
+	mutex_lock(&all_memcg_lrus_mutex);
+	list_del(&lru->lrus);
+	mutex_unlock(&all_memcg_lrus_mutex);
+}
+
+void memcg_destroy_all_lrus(struct mem_cgroup *memcg)
+{
+	struct list_lru *lru;
+	mutex_lock(&all_memcg_lrus_mutex);
+	list_for_each_entry(lru, &all_memcg_lrus, lrus) {
+		kfree(lru->memcg_lrus[memcg_cache_id(memcg)]);
+		lru->memcg_lrus[memcg_cache_id(memcg)] = NULL;
+		/* everybody must beaware that this memcg is no longer valid */
+		wmb();
+	}
+	mutex_unlock(&all_memcg_lrus_mutex);
+}
+#endif
+
+int __list_lru_init(struct list_lru *lru, bool memcg_enabled)
 {
 	int i;
 
 	nodes_clear(lru->active_nodes);
-	for (i = 0; i < MAX_NUMNODES; i++) {
-		spin_lock_init(&lru->node[i].lock);
-		INIT_LIST_HEAD(&lru->node[i].list);
-		lru->node[i].nr_items = 0;
-	}
+	for (i = 0; i < MAX_NUMNODES; i++)
+		list_lru_init_one(&lru->node[i]);
+
+	if (memcg_enabled)
+		return memcg_init_lru(lru);
 	return 0;
 }
-EXPORT_SYMBOL_GPL(list_lru_init);
+EXPORT_SYMBOL_GPL(__list_lru_init);
