@@ -747,13 +747,14 @@ inode_lru_isolate(struct list_head *item, spinlock_t *lru_lock, void *arg)
  * then are freed outside inode_lock by dispose_list().
  */
 long prune_icache_sb(struct super_block *sb, unsigned long nr_to_scan,
-		     int nid)
+		     int nid, struct mem_cgroup *memcg)
 {
 	LIST_HEAD(freeable);
 	long freed;
 
-	freed = list_lru_walk_node(&sb->s_inode_lru, nid, inode_lru_isolate,
-				       &freeable, &nr_to_scan);
+	freed = list_lru_walk_node_memcg(&sb->s_inode_lru, nid,
+					inode_lru_isolate, &freeable,
+					&nr_to_scan, memcg);
 	dispose_list(&freeable);
 	return freed;
 }

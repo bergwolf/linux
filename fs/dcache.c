@@ -889,13 +889,14 @@ dentry_lru_isolate(struct list_head *item, spinlock_t *lru_lock, void *arg)
  * use.
  */
 long prune_dcache_sb(struct super_block *sb, unsigned long nr_to_scan,
-		     int nid)
+		     int nid, struct mem_cgroup *memcg)
 {
 	LIST_HEAD(dispose);
 	long freed;
 
-	freed = list_lru_walk_node(&sb->s_dentry_lru, nid, dentry_lru_isolate,
-				       &dispose, &nr_to_scan);
+	freed = list_lru_walk_node_memcg(&sb->s_dentry_lru, nid,
+					dentry_lru_isolate, &dispose,
+					&nr_to_scan, memcg);
 	shrink_dentry_list(&dispose);
 	return freed;
 }
