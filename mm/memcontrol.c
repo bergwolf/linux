@@ -3326,9 +3326,7 @@ int memcg_update_cache_sizes(struct mem_cgroup *memcg)
 
 	memcg_update_array_size(num + 1);
 
-	INIT_LIST_HEAD(&memcg->memcg_slab_caches);
 	INIT_WORK(&memcg->kmemcg_shrink_work, kmemcg_shrink_work_fn);
-	mutex_init(&memcg->slab_caches_mutex);
 
 	return 0;
 out:
@@ -6319,6 +6317,8 @@ static int memcg_init_kmem(struct mem_cgroup *memcg, struct cgroup_subsys *ss)
 {
 	int ret;
 
+	INIT_LIST_HEAD(&memcg->memcg_slab_caches);
+	mutex_init(&memcg->slab_caches_mutex);
 	memcg->kmemcg_id = -1;
 	ret = memcg_propagate_kmem(memcg);
 	if (ret)
