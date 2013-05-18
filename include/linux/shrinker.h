@@ -19,6 +19,8 @@ struct shrink_control {
 
 	/* shrink from these nodes */
 	nodemask_t nodes_to_scan;
+	/* current node being shrunk (for NUMA aware shrinkers) */
+	int nid;
 };
 
 /*
@@ -42,6 +44,8 @@ struct shrink_control {
  * objects freed during the scan, or -1 if progress cannot be made due to
  * potential deadlocks. If -1 is returned, then no further attempts to call the
  * @scan_objects will be made from the current reclaim context.
+ *
+ * @flags determine the shrinker abilities, like numa awareness 
  */
 struct shrinker {
 	int (*shrink)(struct shrinker *, struct shrink_control *sc);
@@ -50,12 +54,34 @@ struct shrinker {
 
 	int seeks;	/* seeks to recreate an obj */
 	long batch;	/* reclaim batch size, 0 = default */
+	unsigned long flags;
 
 	/* These are for internal use */
 	struct list_head list;
-	atomic_long_t nr_in_batch; /* objs pending delete */
+	/*
+	 * We would like to avoid allocating memory when registering a new
+	 * shrinker. All shrinkers will need to keep track of deferred objects,
+	 * and we need a counter for this. If the shrinkers are not NUMA aware,
+	 * this is a small and bounded space that fits into an atomic_long_t.
+	 * This is because that the deferring decisions are global, and we will
+	 * not allocate in this case.
+	 *
+	 * When the shrinker is NUMA aware, we will need this to be a per-node
+	 * array. Numerically speaking, the minority of shrinkers are NUMA
+	 * aware, so this saves quite a bit.
+	 */
+	union {
+		/* objs pending delete */
+		atomic_long_t nr_deferred;
+		/* objs pending delete, per node */
+		atomic_long_t *nr_deferred_node;
+	};
 };
 #define DEFAULT_SEEKS 2 /* A good number if you don't know better. */
-extern void register_shrinker(struct shrinker *);
+
+/* Flags */
+#define SHRINKER_NUMA_AWARE (1 << 0)
+
+extern int register_shrinker(struct shrinker *);
 extern void unregister_shrinker(struct shrinker *);
 #endif
