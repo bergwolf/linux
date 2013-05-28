@@ -99,10 +99,11 @@ static inline char list_empty_marker(struct list_head *list)
 
 #define EXTSTR       "[%lu -> %lu/%lu]"
 #define EXTPARA(ext) (ext)->oe_start, (ext)->oe_end, (ext)->oe_max_end
+static const char *oes_strings[] = {
+	"inv", "active", "cache", "locking", "lockdone", "rpc", "trunc", NULL };
 
 #define OSC_EXTENT_DUMP(lvl, extent, fmt, ...) do {			      \
 	struct osc_extent *__ext = (extent);				      \
-	const char *__str[] = OES_STRINGS;				      \
 	char __buf[16];							      \
 									      \
 	CDEBUG(lvl,							      \
@@ -114,7 +115,7 @@ static inline char list_empty_marker(struct list_head *list)
 		atomic_read(&__ext->oe_refc),			      \
 		atomic_read(&__ext->oe_users),			      \
 		list_empty_marker(&__ext->oe_link),			      \
-		__str[__ext->oe_state], ext_flags(__ext, __buf),	      \
+		oes_strings[__ext->oe_state], ext_flags(__ext, __buf),	      \
 		__ext->oe_obj,						      \
 		/* ----- part 2 ----- */				      \
 		__ext->oe_grants, __ext->oe_nr_pages,			      \
@@ -128,10 +129,10 @@ static inline char list_empty_marker(struct list_head *list)
 #undef EASSERTF
 #define EASSERTF(expr, ext, fmt, args...) do {				\
 	if (!(expr)) {							\
-		OSC_EXTENT_DUMP(D_ERROR, (ext), fmt, ##args);		 \
-		osc_extent_tree_dump(D_ERROR, (ext)->oe_obj);		 \
+		OSC_EXTENT_DUMP(D_ERROR, (ext), fmt, ##args);		\
+		osc_extent_tree_dump(D_ERROR, (ext)->oe_obj);		\
 		LASSERT(expr);						\
-	}								     \
+	}								\
 } while (0)
 
 #undef EASSERT
@@ -1310,12 +1311,10 @@ static int osc_completion(const struct lu_env *env, struct osc_async_page *oap,
 #define OSC_DUMP_GRANT(cli, fmt, args...) do {				      \
 	struct client_obd *__tmp = (cli);				      \
 	CDEBUG(D_CACHE, "%s: { dirty: %ld/%ld dirty_pages: %d/%d "	      \
-	       "unstable_pages: %d/%d dropped: %ld avail: %ld, "	      \
-	       "reserved: %ld, flight: %d } " fmt,			      \
+	       "dropped: %ld avail: %ld, reserved: %ld, flight: %d } " fmt,   \
 	       __tmp->cl_import->imp_obd->obd_name,			      \
 	       __tmp->cl_dirty, __tmp->cl_dirty_max,			      \
 	       atomic_read(&obd_dirty_pages), obd_max_dirty_pages,	      \
-	       atomic_read(&obd_unstable_pages), obd_max_dirty_pages,     \
 	       __tmp->cl_lost_grant, __tmp->cl_avail_grant,		      \
 	       __tmp->cl_reserved_grant, __tmp->cl_w_in_flight, ##args);      \
 } while (0)
@@ -1465,8 +1464,7 @@ static int osc_enter_cache_try(struct client_obd *cli,
 		return 0;
 
 	if (cli->cl_dirty + PAGE_CACHE_SIZE <= cli->cl_dirty_max &&
-	    atomic_read(&obd_unstable_pages) + 1 +
-	    atomic_read(&obd_dirty_pages) <= obd_max_dirty_pages) {
+	    atomic_read(&obd_dirty_pages) + 1 <= obd_max_dirty_pages) {
 		osc_consume_write_grant(cli, &oap->oap_brw_page);
 		if (transient) {
 			cli->cl_dirty_transit += PAGE_CACHE_SIZE;
@@ -1579,9 +1577,9 @@ void osc_wake_cache_waiters(struct client_obd *cli)
 
 		ocw->ocw_rc = -EDQUOT;
 		/* we can't dirty more */
-		if (cli->cl_dirty + PAGE_CACHE_SIZE > cli->cl_dirty_max ||
-		    atomic_read(&obd_unstable_pages) + 1 +
-		    atomic_read(&obd_dirty_pages) > obd_max_dirty_pages) {
+		if ((cli->cl_dirty + PAGE_CACHE_SIZE > cli->cl_dirty_max) ||
+		    (atomic_read(&obd_dirty_pages) + 1 >
+		     obd_max_dirty_pages)) {
 			CDEBUG(D_CACHE, "no dirty room: dirty: %ld "
 			       "osc max %ld, sys max %d\n", cli->cl_dirty,
 			       cli->cl_dirty_max, obd_max_dirty_pages);
@@ -1749,84 +1747,6 @@ static void osc_process_ar(struct osc_async_rc *ar, __u64 xid,
 		ar->ar_force_sync = 0;
 }
 
-/* Performs "unstable" page accounting. This function balances the
- * increment operations performed in osc_inc_unstable_pages. It is
- * registered as the RPC request callback, and is executed when the
- * bulk RPC is committed on the server. Thus at this point, the pages
- * involved in the bulk transfer are no longer considered unstable. */
-void osc_dec_unstable_pages(struct ptlrpc_request *req)
-{
-	struct ptlrpc_bulk_desc *desc       = req->rq_bulk;
-	struct client_obd       *cli	= &req->rq_import->imp_obd->u.cli;
-	obd_count		page_count = desc->bd_iov_count;
-	int i;
-
-	/* No unstable page tracking */
-	if (cli->cl_cache == NULL)
-		return;
-
-	LASSERT(page_count >= 0);
-
-	for (i = 0; i < page_count; i++)
-		dec_zone_page_state(desc->bd_iov[i].kiov_page, NR_UNSTABLE_NFS);
-
-	atomic_sub(page_count, &cli->cl_cache->ccc_unstable_nr);
-	LASSERT(atomic_read(&cli->cl_cache->ccc_unstable_nr) >= 0);
-
-	atomic_sub(page_count, &obd_unstable_pages);
-	LASSERT(atomic_read(&obd_unstable_pages) >= 0);
-
-	spin_lock(&req->rq_lock);
-	req->rq_committed = 1;
-	req->rq_unstable  = 0;
-	spin_unlock(&req->rq_lock);
-
-	wake_up_all(&cli->cl_cache->ccc_unstable_waitq);
-}
-
-/* "unstable" page accounting. See: osc_dec_unstable_pages. */
-void osc_inc_unstable_pages(struct ptlrpc_request *req)
-{
-	struct ptlrpc_bulk_desc *desc = req->rq_bulk;
-	struct client_obd       *cli  = &req->rq_import->imp_obd->u.cli;
-	obd_count		page_count = desc->bd_iov_count;
-	int i;
-
-	/* No unstable page tracking */
-	if (cli->cl_cache == NULL)
-		return;
-
-	LASSERT(page_count >= 0);
-
-	for (i = 0; i < page_count; i++)
-		inc_zone_page_state(desc->bd_iov[i].kiov_page, NR_UNSTABLE_NFS);
-
-	LASSERT(atomic_read(&cli->cl_cache->ccc_unstable_nr) >= 0);
-	atomic_add(page_count, &cli->cl_cache->ccc_unstable_nr);
-
-	LASSERT(atomic_read(&obd_unstable_pages) >= 0);
-	atomic_add(page_count, &obd_unstable_pages);
-
-	spin_lock(&req->rq_lock);
-
-	/* If the request has already been committed (i.e. brw_commit
-	 * called via rq_commit_cb), we need to undo the unstable page
-	 * increments we just performed because rq_commit_cb wont be
-	 * called again. Otherwise, just set the commit callback so the
-	 * unstable page accounting is properly updated when the request
-	 * is committed */
-	if (req->rq_committed) {
-		/* Drop lock before calling osc_dec_unstable_pages */
-		spin_unlock(&req->rq_lock);
-		osc_dec_unstable_pages(req);
-		spin_lock(&req->rq_lock);
-	} else {
-		req->rq_unstable  = 1;
-		req->rq_commit_cb = osc_dec_unstable_pages;
-	}
-
-	spin_unlock(&req->rq_lock);
-}
 
 /* this must be called holding the loi list lock to give coverage to exit_cache,
  * async_flag maintenance, and oap_request */
@@ -1839,9 +1759,6 @@ static void osc_ap_completion(const struct lu_env *env, struct client_obd *cli,
 
 	ENTRY;
 	if (oap->oap_request != NULL) {
-		if (rc == 0)
-			osc_inc_unstable_pages(oap->oap_request);
-
 		xid = ptlrpc_req_xid(oap->oap_request);
 		ptlrpc_req_finished(oap->oap_request);
 		oap->oap_request = NULL;
@@ -2209,27 +2126,24 @@ static void osc_check_rpcs(const struct lu_env *env, struct client_obd *cli,
 static int osc_io_unplug0(const struct lu_env *env, struct client_obd *cli,
 			  struct osc_object *osc, pdl_policy_t pol, int async)
 {
-	int has_rpcs = 1;
 	int rc = 0;
 
-	client_obd_list_lock(&cli->cl_loi_list_lock);
-	if (osc != NULL)
-		has_rpcs = __osc_list_maint(cli, osc);
-	if (has_rpcs) {
-		if (!async) {
-			/* disable osc_lru_shrink() temporarily to avoid
-			 * potential stack overrun problem. LU-2859 */
-			atomic_inc(&cli->cl_lru_shrinkers);
-			osc_check_rpcs(env, cli, pol);
-			atomic_dec(&cli->cl_lru_shrinkers);
-		} else {
-			CDEBUG(D_CACHE, "Queue writeback work for client %p.\n",
-			       cli);
-			LASSERT(cli->cl_writeback_work != NULL);
-			rc = ptlrpcd_queue_work(cli->cl_writeback_work);
-		}
+	if (osc != NULL && osc_list_maint(cli, osc) == 0)
+		return 0;
+
+	if (!async) {
+		/* disable osc_lru_shrink() temporarily to avoid
+		 * potential stack overrun problem. LU-2859 */
+		atomic_inc(&cli->cl_lru_shrinkers);
+		client_obd_list_lock(&cli->cl_loi_list_lock);
+		osc_check_rpcs(env, cli, pol);
+		client_obd_list_unlock(&cli->cl_loi_list_lock);
+		atomic_dec(&cli->cl_lru_shrinkers);
+	} else {
+		CDEBUG(D_CACHE, "Queue writeback work for client %p.\n", cli);
+		LASSERT(cli->cl_writeback_work != NULL);
+		rc = ptlrpcd_queue_work(cli->cl_writeback_work);
 	}
-	client_obd_list_unlock(&cli->cl_loi_list_lock);
 	return rc;
 }
 
@@ -2785,7 +2699,7 @@ again:
 		 * should take care of it. */
 		rc = osc_extent_wait(env, waiting, OES_INV);
 		if (rc < 0)
-			OSC_EXTENT_DUMP(D_CACHE, ext, "wait error: %d.\n", rc);
+			OSC_EXTENT_DUMP(D_CACHE, waiting, "error: %d.\n", rc);
 
 		osc_extent_put(env, waiting);
 		waiting = NULL;

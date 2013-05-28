@@ -383,6 +383,8 @@ extern void lustre_hsm_swab(struct hsm_attrs *attrs);
  * fid constants
  */
 enum {
+	/** LASTID file has zero OID */
+	LUSTRE_FID_LASTID_OID = 0UL,
 	/** initial fid id value */
 	LUSTRE_FID_INIT_OID  = 1UL
 };
@@ -501,8 +503,8 @@ static inline int fid_seq_is_llog(obd_seq seq)
 
 static inline int fid_is_llog(const struct lu_fid *fid)
 {
-	/* file with OID == 1 is not llog but contains last oid */
-	return fid_seq_is_llog(fid_seq(fid)) && fid_oid(fid) > 1;
+	/* file with OID == 0 is not llog but contains last oid */
+	return fid_seq_is_llog(fid_seq(fid)) && fid_oid(fid) > 0;
 }
 
 static inline int fid_seq_is_rsvd(const __u64 seq)
@@ -785,8 +787,7 @@ static inline int fid_to_ostid(const struct lu_fid *fid, struct ost_id *ostid)
 /* Check whether the fid is for LAST_ID */
 static inline int fid_is_last_id(const struct lu_fid *fid)
 {
-	return (fid_is_idif(fid) || fid_is_norm(fid) || fid_is_echo(fid)) &&
-		fid_oid(fid) == 0;
+	return (fid_oid(fid) == 0);
 }
 
 /**
@@ -3215,13 +3216,25 @@ struct obdo {
 #define o_cksum   o_nlink
 #define o_grant_used o_data_version
 
-static inline void lustre_set_wire_obdo(struct obdo *wobdo, struct obdo *lobdo)
+static inline void lustre_set_wire_obdo(struct obd_connect_data *ocd,
+					struct obdo *wobdo, struct obdo *lobdo)
 {
 	memcpy(wobdo, lobdo, sizeof(*lobdo));
 	wobdo->o_flags &= ~OBD_FL_LOCAL_MASK;
+	if (ocd == NULL)
+		return;
+
+	if (unlikely(!(ocd->ocd_connect_flags & OBD_CONNECT_FID)) &&
+	    fid_seq_is_echo(ostid_seq(&lobdo->o_oi))) {
+		/* Currently OBD_FL_OSTID will only be used when 2.4 echo
+		 * client communicate with pre-2.4 server */
+		wobdo->o_oi.oi.oi_id = fid_oid(&lobdo->o_oi.oi_fid);
+		wobdo->o_oi.oi.oi_seq = fid_seq(&lobdo->o_oi.oi_fid);
+	}
 }
 
-static inline void lustre_get_wire_obdo(struct obdo *lobdo, struct obdo *wobdo)
+static inline void lustre_get_wire_obdo(struct obd_connect_data *ocd,
+					struct obdo *lobdo, struct obdo *wobdo)
 {
 	obd_flag local_flags = 0;
 
@@ -3232,9 +3245,19 @@ static inline void lustre_get_wire_obdo(struct obdo *lobdo, struct obdo *wobdo)
 
 	memcpy(lobdo, wobdo, sizeof(*lobdo));
 	if (local_flags != 0) {
-		 lobdo->o_valid |= OBD_MD_FLFLAGS;
-		 lobdo->o_flags &= ~OBD_FL_LOCAL_MASK;
-		 lobdo->o_flags |= local_flags;
+		lobdo->o_valid |= OBD_MD_FLFLAGS;
+		lobdo->o_flags &= ~OBD_FL_LOCAL_MASK;
+		lobdo->o_flags |= local_flags;
+	}
+	if (ocd == NULL)
+		return;
+
+	if (unlikely(!(ocd->ocd_connect_flags & OBD_CONNECT_FID)) &&
+	    fid_seq_is_echo(wobdo->o_oi.oi.oi_seq)) {
+		/* see above */
+		lobdo->o_oi.oi_fid.f_seq = wobdo->o_oi.oi.oi_seq;
+		lobdo->o_oi.oi_fid.f_oid = wobdo->o_oi.oi.oi_id;
+		lobdo->o_oi.oi_fid.f_ver = 0;
 	}
 }
 
@@ -3267,6 +3290,7 @@ extern void lustre_swab_llogd_body (struct llogd_body *d);
 extern void lustre_swab_llog_hdr (struct llog_log_hdr *h);
 extern void lustre_swab_llogd_conn_body (struct llogd_conn_body *d);
 extern void lustre_swab_llog_rec(struct llog_rec_hdr *rec);
+extern void lustre_swab_llog_id(struct llog_logid *lid);
 
 struct lustre_cfg;
 extern void lustre_swab_lustre_cfg(struct lustre_cfg *lcfg);

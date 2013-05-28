@@ -1081,8 +1081,9 @@ static struct echo_object *cl_echo_object_find(struct echo_device *d,
 	LASSERT(lsmp);
 	lsm = *lsmp;
 	LASSERT(lsm);
-	LASSERT(ostid_id(&lsm->lsm_oi) != 0);
-	LASSERT(ostid_seq(&lsm->lsm_oi) == FID_SEQ_ECHO);
+	LASSERTF(ostid_id(&lsm->lsm_oi) != 0, DOSTID"\n", POSTID(&lsm->lsm_oi));
+	LASSERTF(ostid_seq(&lsm->lsm_oi) == FID_SEQ_ECHO, DOSTID"\n",
+		 POSTID(&lsm->lsm_oi));
 
 	/* Never return an object if the obd is to be freed. */
 	if (echo_dev2cl(d)->cd_lu_dev.ld_obd->obd_stopping)
@@ -2649,6 +2650,10 @@ static int echo_client_prep_commit(const struct lu_env *env,
 
 		/* Reset oti otherwise it would confuse ldiskfs. */
 		memset(oti, 0, sizeof(*oti));
+
+		/* Reuse env context. */
+		lu_context_exit((struct lu_context *)&env->le_ctx);
+		lu_context_enter((struct lu_context *)&env->le_ctx);
 	}
 
 out:
@@ -3035,7 +3040,8 @@ static int echo_client_setup(const struct lu_env *env,
 	ocd->ocd_connect_flags = OBD_CONNECT_VERSION | OBD_CONNECT_REQPORTAL |
 				 OBD_CONNECT_BRW_SIZE |
 				 OBD_CONNECT_GRANT | OBD_CONNECT_FULL20 |
-				 OBD_CONNECT_64BITHASH | OBD_CONNECT_LVB_TYPE;
+				 OBD_CONNECT_64BITHASH | OBD_CONNECT_LVB_TYPE |
+				 OBD_CONNECT_FID;
 	ocd->ocd_brw_size = DT_MAX_BRW_SIZE;
 	ocd->ocd_version = LUSTRE_VERSION_CODE;
 	ocd->ocd_group = FID_SEQ_ECHO;

@@ -465,6 +465,7 @@ struct ll_sb_info {
 	struct lu_fid	     ll_root_fid; /* root object fid */
 
 	int		       ll_flags;
+	int			  ll_umounting:1;
 	struct list_head		ll_conn_chain; /* per-conn chain of SBs */
 	struct lustre_client_ocd  ll_lco;
 
@@ -473,10 +474,6 @@ struct ll_sb_info {
 
 	struct lprocfs_stats     *ll_stats; /* lprocfs stats counter */
 
-	/* Used to track "unstable" pages on a client, and maintain a
-	 * LRU list of clean pages. An "unstable" page is defined as
-	 * any page which is sent to a server as part of a bulk request,
-	 * but is uncommitted to stable storage. */
 	struct cl_client_cache    ll_cache;
 
 	struct lprocfs_stats     *ll_ra_stats;
@@ -1419,7 +1416,7 @@ static inline int cl_merge_lvb(const struct lu_env *env, struct inode *inode)
 struct obd_capa *cl_capa_lookup(struct inode *inode, enum cl_req_type crt);
 
 int cl_sync_file_range(struct inode *inode, loff_t start, loff_t end,
-		       enum cl_fsync_mode mode);
+		       enum cl_fsync_mode mode, int ignore_layout);
 
 /** direct write pages */
 struct ll_dio_pages {
@@ -1528,13 +1525,14 @@ static inline void __d_lustre_invalidate(struct dentry *dentry)
  * ll_md_blocking_ast), unhash this dentry, and let dcache to reclaim it later;
  * else dput() of the last refcount will unhash this dentry and kill it.
  */
-static inline void d_lustre_invalidate(struct dentry *dentry)
+static inline void d_lustre_invalidate(struct dentry *dentry, int nested)
 {
 	CDEBUG(D_DENTRY, "invalidate dentry %.*s (%p) parent %p inode %p "
 	       "refc %d\n", dentry->d_name.len, dentry->d_name.name, dentry,
 	       dentry->d_parent, dentry->d_inode, d_refcount(dentry));
 
-	spin_lock(&dentry->d_lock);
+	spin_lock_nested(&dentry->d_lock,
+			 nested ? DENTRY_D_LOCK_NESTED : DENTRY_D_LOCK_NORMAL);
 	__d_lustre_invalidate(dentry);
 	if (d_refcount(dentry) == 0)
 		__d_drop(dentry);

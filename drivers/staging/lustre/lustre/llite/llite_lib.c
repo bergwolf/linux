@@ -99,15 +99,12 @@ static struct ll_sb_info *ll_init_sbi(void)
 		lru_page_max = (pages / 4) * 3;
 	}
 
-	/* initialize ll_cache data */
+	/* initialize lru data */
 	atomic_set(&sbi->ll_cache.ccc_users, 0);
 	sbi->ll_cache.ccc_lru_max = lru_page_max;
 	atomic_set(&sbi->ll_cache.ccc_lru_left, lru_page_max);
 	spin_lock_init(&sbi->ll_cache.ccc_lru_lock);
 	INIT_LIST_HEAD(&sbi->ll_cache.ccc_lru);
-
-	atomic_set(&sbi->ll_cache.ccc_unstable_nr, 0);
-	init_waitqueue_head(&sbi->ll_cache.ccc_unstable_waitq);
 
 	sbi->ll_ra_info.ra_max_pages_per_file = min(pages / 32,
 					   SBI_DEFAULT_READAHEAD_MAX);
@@ -724,8 +721,10 @@ void ll_kill_super(struct super_block *sb)
 	/* we need restore s_dev from changed for clustred NFS before put_super
 	 * because new kernels have cached s_dev and change sb->s_dev in
 	 * put_super not affected real removing devices */
-	if (sbi)
+	if (sbi) {
 		sb->s_dev = sbi->ll_sdev_orig;
+		sbi->ll_umounting = 1;
+	}
 	EXIT;
 }
 
@@ -1072,7 +1071,7 @@ void ll_put_super(struct super_block *sb)
 	struct lustre_sb_info *lsi = s2lsi(sb);
 	struct ll_sb_info *sbi = ll_s2sbi(sb);
 	char *profilenm = get_profile_name(sb);
-	int ccc_count, next, force = 1, rc = 0;
+	int next, force = 1;
 	ENTRY;
 
 	CDEBUG(D_VFSTRACE, "VFS Op: sb %p - %s\n", sb, profilenm);
@@ -1087,19 +1086,6 @@ void ll_put_super(struct super_block *sb)
 		if (obd)
 			force = obd->obd_force;
 	}
-
-	/* Wait for unstable pages to be committed to stable storage */
-	if (force == 0) {
-		struct l_wait_info lwi = LWI_INTR(LWI_ON_SIGNAL_NOOP, NULL);
-		rc = l_wait_event(sbi->ll_cache.ccc_unstable_waitq,
-			atomic_read(&sbi->ll_cache.ccc_unstable_nr) == 0,
-			&lwi);
-	}
-
-	ccc_count = atomic_read(&sbi->ll_cache.ccc_unstable_nr);
-	if (force == 0 && rc != -EINTR)
-		LASSERTF(ccc_count == 0, "count: %i\n", ccc_count);
-
 
 	/* We need to set force before the lov_disconnect in
 	   lustre_common_put_super, since l_d cleans up osc's as well. */
@@ -1856,7 +1842,8 @@ void ll_delete_inode(struct inode *inode)
 	if (S_ISREG(inode->i_mode) && lli->lli_clob != NULL)
 		/* discard all dirty pages before truncating them, required by
 		 * osc_extent implementation at LU-1030. */
-		cl_sync_file_range(inode, 0, OBD_OBJECT_EOF, CL_FSYNC_DISCARD);
+		cl_sync_file_range(inode, 0, OBD_OBJECT_EOF,
+				   CL_FSYNC_DISCARD, 1);
 
 	truncate_inode_pages(&inode->i_data, 0);
 
@@ -2025,7 +2012,6 @@ void ll_umount_begin(struct super_block *sb)
 
 		OBD_FREE_PTR(ioc_data);
 	}
-
 
 	/* Really, we'd like to wait until there are no requests outstanding,
 	 * and then continue.  For now, we just invalidate the requests,

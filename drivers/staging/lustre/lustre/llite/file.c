@@ -95,8 +95,9 @@ static void ll_prepare_close(struct inode *inode, struct md_op_data *op_data,
 {
 	ENTRY;
 
-	op_data->op_attr.ia_valid = ATTR_MODE | ATTR_ATIME_SET |
-				 ATTR_MTIME_SET | ATTR_CTIME_SET;
+	op_data->op_attr.ia_valid = ATTR_MODE | ATTR_ATIME | ATTR_ATIME_SET |
+					ATTR_MTIME | ATTR_MTIME_SET |
+					ATTR_CTIME | ATTR_CTIME_SET;
 
 	if (!(och->och_flags & FMODE_WRITE))
 		goto out;
@@ -2175,7 +2176,7 @@ int ll_flush(struct file *file, fl_owner_t id)
  * Return how many pages have been written.
  */
 int cl_sync_file_range(struct inode *inode, loff_t start, loff_t end,
-		       enum cl_fsync_mode mode)
+		       enum cl_fsync_mode mode, int ignore_layout)
 {
 	struct cl_env_nest nest;
 	struct lu_env *env;
@@ -2197,7 +2198,7 @@ int cl_sync_file_range(struct inode *inode, loff_t start, loff_t end,
 
 	io = ccc_env_thread_io(env);
 	io->ci_obj = cl_i2info(inode)->lli_clob;
-	io->ci_ignore_layout = 1;
+	io->ci_ignore_layout = ignore_layout;
 
 	/* initialize parameters for sync */
 	fio = &io->u.ci_fsync;
@@ -2270,7 +2271,7 @@ int ll_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 		struct ll_file_data *fd = LUSTRE_FPRIVATE(file);
 
 		err = cl_sync_file_range(inode, 0, OBD_OBJECT_EOF,
-				CL_FSYNC_ALL);
+				CL_FSYNC_ALL, 0);
 		if (rc == 0 && err < 0)
 			rc = err;
 		if (rc < 0)
@@ -2562,7 +2563,7 @@ int __ll_inode_revalidate_it(struct dentry *dentry, struct lookup_intent *it,
 		   here to preserve get_cwd functionality on 2.6.
 		   Bug 10503 */
 		if (!dentry->d_inode->i_nlink)
-			d_lustre_invalidate(dentry);
+			d_lustre_invalidate(dentry, 0);
 
 		ll_lookup_finish_locks(&oit, dentry);
 	} else if (!ll_have_md_lock(dentry->d_inode, &ibits, LCK_MINMODE)) {
@@ -3009,6 +3010,9 @@ static int ll_layout_lock_set(struct lustre_handle *lockh, ldlm_mode_t mode,
 	LDLM_DEBUG(lock, "File %p/"DFID" being reconfigured: %d.\n",
 		inode, PFID(&lli->lli_fid), reconf);
 
+	/* in case this is a caching lock and reinstate with new inode */
+	md_set_lock_data(sbi->ll_md_exp, &lockh->cookie, inode, NULL);
+
 	lock_res_and_lock(lock);
 	lvb_ready = !!(lock->l_flags & LDLM_FL_LVB_READY);
 	unlock_res_and_lock(lock);
@@ -3176,8 +3180,6 @@ again:
 	it.d.lustre.it_data = NULL;
 
 	ll_finish_md_op_data(op_data);
-
-	md_set_lock_data(sbi->ll_md_exp, &it.d.lustre.it_lock_handle, inode, NULL);
 
 	mode = it.d.lustre.it_lock_mode;
 	it.d.lustre.it_lock_mode = 0;
