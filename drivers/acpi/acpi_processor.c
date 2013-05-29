@@ -389,8 +389,7 @@ static int __cpuinit acpi_processor_add(struct acpi_device *device,
 	per_cpu(processor_device_array, pr->id) = device;
 
 	dev = get_cpu_device(pr->id);
-	ACPI_HANDLE_SET(dev, pr->handle);
-	result = acpi_bind_one(dev, NULL);
+	result = acpi_bind_one(dev, pr->handle);
 	if (result)
 		goto err;
 
