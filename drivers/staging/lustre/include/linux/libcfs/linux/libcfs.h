@@ -49,7 +49,6 @@
 #include <linux/libcfs/linux/linux-mem.h>
 #include <linux/libcfs/linux/linux-prim.h>
 #include <linux/libcfs/linux/linux-lock.h>
-#include <linux/libcfs/linux/linux-fs.h>
 #include <linux/libcfs/linux/linux-tcpip.h>
 #include <linux/libcfs/linux/linux-bitops.h>
 #include <linux/libcfs/linux/linux-types.h>
@@ -110,12 +109,6 @@ do {								    \
 #define CFS_CURPROC_COMM_MAX (sizeof ((struct task_struct *)0)->comm)
 
 #include <linux/capability.h>
-
-/*
- * No stack-back-tracing in Linux for now.
- */
-struct cfs_stack_trace {
-};
 
 /* long integer with size equal to pointer */
 typedef unsigned long ulong_ptr_t;

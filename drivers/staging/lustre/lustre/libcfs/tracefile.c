@@ -711,8 +711,8 @@ int cfs_tracefile_dump_all_pages(char *filename)
 
 		__LASSERT_TAGE_INVARIANT(tage);
 
-		rc = filp_write(filp, page_address(tage->page),
-				tage->used, filp_poff(filp));
+		rc = vfs_write(filp, page_address(tage->page),
+			       tage->used, &filp->f_pos);
 		if (rc != (int)tage->used) {
 			printk(KERN_WARNING "wanted to write %u but wrote "
 			       "%d\n", tage->used, rc);
@@ -724,7 +724,7 @@ int cfs_tracefile_dump_all_pages(char *filename)
 		cfs_tage_free(tage);
 	}
 	MMSPACE_CLOSE;
-	rc = filp_fsync(filp);
+	rc = vfs_fsync(filp, 1);
 	if (rc)
 		printk(KERN_ERR "sync returns %d\n", rc);
 close:
@@ -1018,16 +1018,17 @@ static int tracefiled(void *arg)
 		list_for_each_entry_safe(tage, tmp, &pc.pc_pages,
 						   linkage) {
 			static loff_t f_pos;
+			loff_t size = i_size_read(filp->f_dentry->d_inode);
 
 			__LASSERT_TAGE_INVARIANT(tage);
 
 			if (f_pos >= (off_t)cfs_tracefile_size)
 				f_pos = 0;
-			else if (f_pos > (off_t)filp_size(filp))
-				f_pos = filp_size(filp);
+			else if (f_pos > (off_t)size)
+				f_pos = size;
 
-			rc = filp_write(filp, page_address(tage->page),
-					tage->used, &f_pos);
+			rc = vfs_write(filp, page_address(tage->page),
+				       tage->used, &f_pos);
 			if (rc != (int)tage->used) {
 				printk(KERN_WARNING "wanted to write %u "
 				       "but wrote %d\n", tage->used, rc);
