@@ -503,7 +503,8 @@ void icmp_send(struct sk_buff *skb_in, int type, int code, __be32 info)
 	iph = ip_hdr(skb_in);
 
 	if ((u8 *)iph < skb_in->head ||
-	    (skb_in->network_header + sizeof(*iph)) > skb_in->tail)
+	    (skb_network_header(skb_in) + sizeof(*iph)) >
+	    skb_tail_pointer(skb_in))
 		goto out;
 
 	/*
@@ -939,7 +940,8 @@ error:
 void icmp_err(struct sk_buff *skb, u32 info)
 {
 	struct iphdr *iph = (struct iphdr *)skb->data;
-	struct icmphdr *icmph = (struct icmphdr *)(skb->data+(iph->ihl<<2));
+	int offset = iph->ihl<<2;
+	struct icmphdr *icmph = (struct icmphdr *)(skb->data + offset);
 	int type = icmp_hdr(skb)->type;
 	int code = icmp_hdr(skb)->code;
 	struct net *net = dev_net(skb->dev);
@@ -949,7 +951,7 @@ void icmp_err(struct sk_buff *skb, u32 info)
 	 * triggered by ICMP_ECHOREPLY which sent from kernel.
 	 */
 	if (icmph->type != ICMP_ECHOREPLY) {
-		ping_err(skb, info);
+		ping_err(skb, offset, info);
 		return;
 	}
 

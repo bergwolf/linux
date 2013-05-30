@@ -247,7 +247,7 @@ static void netpoll_poll_dev(struct net_device *dev)
 	zap_completion_queue();
 }
 
-int netpoll_rx_disable(struct net_device *dev)
+void netpoll_rx_disable(struct net_device *dev)
 {
 	struct netpoll_info *ni;
 	int idx;
@@ -257,7 +257,6 @@ int netpoll_rx_disable(struct net_device *dev)
 	if (ni)
 		down(&ni->dev_lock);
 	srcu_read_unlock(&netpoll_srcu, idx);
-	return 0;
 }
 EXPORT_SYMBOL(netpoll_rx_disable);
 
@@ -677,6 +676,8 @@ static void netpoll_neigh_reply(struct sk_buff *skb, struct netpoll_info *npinfo
 
 		spin_lock_irqsave(&npinfo->rx_lock, flags);
 		list_for_each_entry_safe(np, tmp, &npinfo->rx_np, rx) {
+			unsigned long tail_offset;
+
 			if (!ipv6_addr_equal(daddr, &np->local_ip.in6))
 				continue;
 
@@ -701,7 +702,12 @@ static void netpoll_neigh_reply(struct sk_buff *skb, struct netpoll_info *npinfo
 			hdr->saddr = *saddr;
 			hdr->daddr = *daddr;
 
-			send_skb->transport_header = send_skb->tail;
+			tail_offset = skb_tail_offset(skb);
+			if (tail_offset > 0xffff) {
+				kfree_skb(send_skb);
+				continue;
+			}
+			skb_set_network_header(send_skb, tail_offset);
 			skb_put(send_skb, size);
 
 			icmp6h = (struct icmp6hdr *)skb_transport_header(skb);

@@ -9780,6 +9780,21 @@ static bool bnx2x_prev_is_path_marked(struct bnx2x *bp)
 	return rc;
 }
 
+bool bnx2x_port_after_undi(struct bnx2x *bp)
+{
+	struct bnx2x_prev_path_list *entry;
+	bool val;
+
+	down(&bnx2x_prev_sem);
+
+	entry = bnx2x_prev_path_get_entry(bp);
+	val = !!(entry && (entry->undi & (1 << BP_PORT(bp))));
+
+	up(&bnx2x_prev_sem);
+
+	return val;
+}
+
 static int bnx2x_prev_mark_path(struct bnx2x *bp, bool after_undi)
 {
 	struct bnx2x_prev_path_list *tmp_list;
@@ -10036,7 +10051,6 @@ static int bnx2x_prev_unload(struct bnx2x *bp)
 {
 	int time_counter = 10;
 	u32 rc, fw, hw_lock_reg, hw_lock_val;
-	struct bnx2x_prev_path_list *prev_list;
 	BNX2X_DEV_INFO("Entering Previous Unload Flow\n");
 
 	/* clear hw from errors which may have resulted from an interrupted
@@ -10107,8 +10121,7 @@ static int bnx2x_prev_unload(struct bnx2x *bp)
 	}
 
 	/* Mark function if its port was used to boot from SAN */
-	prev_list = bnx2x_prev_path_get_entry(bp);
-	if (prev_list && (prev_list->undi & (1 << BP_PORT(bp))))
+	if (bnx2x_port_after_undi(bp))
 		bp->link_params.feature_config_flags |=
 			FEATURE_CONFIG_BOOT_FROM_SAN;
 
@@ -10782,12 +10795,56 @@ static void bnx2x_get_ext_wwn_info(struct bnx2x *bp, int func)
 	bp->cnic_eth_dev.fcoe_wwn_node_name_lo =
 		MF_CFG_RD(bp, func_ext_config[func].fcoe_wwn_node_name_lower);
 }
+
+static int bnx2x_shared_fcoe_funcs(struct bnx2x *bp)
+{
+	u8 count = 0;
+
+	if (IS_MF(bp)) {
+		u8 fid;
+
+		/* iterate over absolute function ids for this path: */
+		for (fid = BP_PATH(bp); fid < E2_FUNC_MAX * 2; fid += 2) {
+			if (IS_MF_SD(bp)) {
+				u32 cfg = MF_CFG_RD(bp,
+						    func_mf_config[fid].config);
+
+				if (!(cfg & FUNC_MF_CFG_FUNC_HIDE) &&
+				    ((cfg & FUNC_MF_CFG_PROTOCOL_MASK) ==
+					    FUNC_MF_CFG_PROTOCOL_FCOE))
+					count++;
+			} else {
+				u32 cfg = MF_CFG_RD(bp,
+						    func_ext_config[fid].
+								      func_cfg);
+
+				if ((cfg & MACP_FUNC_CFG_FLAGS_ENABLED) &&
+				    (cfg & MACP_FUNC_CFG_FLAGS_FCOE_OFFLOAD))
+					count++;
+			}
+		}
+	} else { /* SF */
+		int port, port_cnt = CHIP_MODE_IS_4_PORT(bp) ? 2 : 1;
+
+		for (port = 0; port < port_cnt; port++) {
+			u32 lic = SHMEM_RD(bp,
+					   drv_lic_key[port].max_fcoe_conn) ^
+				  FW_ENCODE_32BIT_PATTERN;
+			if (lic)
+				count++;
+		}
+	}
+
+	return count;
+}
+
 static void bnx2x_get_fcoe_info(struct bnx2x *bp)
 {
 	int port = BP_PORT(bp);
 	int func = BP_ABS_FUNC(bp);
 	u32 max_fcoe_conn = FW_ENCODE_32BIT_PATTERN ^ SHMEM_RD(bp,
 				drv_lic_key[port].max_fcoe_conn);
+	u8 num_fcoe_func = bnx2x_shared_fcoe_funcs(bp);
 
 	if (!CNIC_SUPPORT(bp)) {
 		bp->flags |= NO_FCOE_FLAG;
@@ -10801,9 +10858,10 @@ static void bnx2x_get_fcoe_info(struct bnx2x *bp)
 
 	/* Calculate the number of maximum allowed FCoE tasks */
 	bp->cnic_eth_dev.max_fcoe_exchanges = MAX_NUM_FCOE_TASKS_PER_ENGINE;
-	if (IS_MF(bp) || CHIP_MODE_IS_4_PORT(bp))
-		bp->cnic_eth_dev.max_fcoe_exchanges /=
-						MAX_FCOE_FUNCS_PER_ENGINE;
+
+	/* check if FCoE resources must be shared between different functions */
+	if (num_fcoe_func)
+		bp->cnic_eth_dev.max_fcoe_exchanges /= num_fcoe_func;
 
 	/* Read the WWN: */
 	if (!IS_MF(bp)) {
@@ -11393,7 +11451,7 @@ static int bnx2x_init_bp(struct bnx2x *bp)
 		if (rc)
 			return rc;
 	} else {
-		random_ether_addr(bp->dev->dev_addr);
+		eth_zero_addr(bp->dev->dev_addr);
 	}
 
 	bnx2x_set_modes_bitmap(bp);
@@ -11584,9 +11642,6 @@ static int bnx2x_close(struct net_device *dev)
 
 	/* Unload the driver, release IRQs */
 	bnx2x_nic_unload(bp, UNLOAD_CLOSE, false);
-
-	/* Power off */
-	bnx2x_set_power_state(bp, PCI_D3hot);
 
 	return 0;
 }
@@ -11852,6 +11907,10 @@ static int bnx2x_validate_addr(struct net_device *dev)
 {
 	struct bnx2x *bp = netdev_priv(dev);
 
+	/* query the bulletin board for mac address configured by the PF */
+	if (IS_VF(bp))
+		bnx2x_sample_bulletin(bp);
+
 	if (!bnx2x_is_valid_ether_addr(bp, dev->dev_addr)) {
 		BNX2X_ERR("Non-valid Ethernet address\n");
 		return -EADDRNOTAVAIL;
@@ -12094,15 +12153,26 @@ err_out:
 	return rc;
 }
 
-static void bnx2x_get_pcie_width_speed(struct bnx2x *bp, int *width, int *speed)
+static void bnx2x_get_pcie_width_speed(struct bnx2x *bp, int *width,
+				       enum bnx2x_pci_bus_speed *speed)
 {
-	u32 val = 0;
+	u32 link_speed, val = 0;
 
 	pci_read_config_dword(bp->pdev, PCICFG_LINK_CONTROL, &val);
 	*width = (val & PCICFG_LINK_WIDTH) >> PCICFG_LINK_WIDTH_SHIFT;
 
-	/* return value of 1=2.5GHz 2=5GHz */
-	*speed = (val & PCICFG_LINK_SPEED) >> PCICFG_LINK_SPEED_SHIFT;
+	link_speed = (val & PCICFG_LINK_SPEED) >> PCICFG_LINK_SPEED_SHIFT;
+
+	switch (link_speed) {
+	case 3:
+		*speed = BNX2X_PCI_LINK_SPEED_8000;
+		break;
+	case 2:
+		*speed = BNX2X_PCI_LINK_SPEED_5000;
+		break;
+	default:
+		*speed = BNX2X_PCI_LINK_SPEED_2500;
+	}
 }
 
 static int bnx2x_check_firmware(struct bnx2x *bp)
@@ -12465,7 +12535,8 @@ static int bnx2x_init_one(struct pci_dev *pdev,
 {
 	struct net_device *dev = NULL;
 	struct bnx2x *bp;
-	int pcie_width, pcie_speed;
+	int pcie_width;
+	enum bnx2x_pci_bus_speed pcie_speed;
 	int rc, max_non_def_sbs;
 	int rx_count, tx_count, rss_count, doorbell_size;
 	int max_cos_est;
@@ -12617,15 +12688,15 @@ static int bnx2x_init_one(struct pci_dev *pdev,
 	BNX2X_DEV_INFO("got pcie width %d and speed %d\n",
 		       pcie_width, pcie_speed);
 
-	BNX2X_DEV_INFO(
-		"%s (%c%d) PCI-E x%d %s found at mem %lx, IRQ %d, node addr %pM\n",
-		    board_info[ent->driver_data].name,
-		    (CHIP_REV(bp) >> 12) + 'A', (CHIP_METAL(bp) >> 4),
-		    pcie_width,
-		    ((!CHIP_IS_E2(bp) && pcie_speed == 2) ||
-		     (CHIP_IS_E2(bp) && pcie_speed == 1)) ?
-		    "5GHz (Gen2)" : "2.5GHz",
-		    dev->base_addr, bp->pdev->irq, dev->dev_addr);
+	BNX2X_DEV_INFO("%s (%c%d) PCI-E x%d %s found at mem %lx, IRQ %d, node addr %pM\n",
+		       board_info[ent->driver_data].name,
+		       (CHIP_REV(bp) >> 12) + 'A', (CHIP_METAL(bp) >> 4),
+		       pcie_width,
+		       pcie_speed == BNX2X_PCI_LINK_SPEED_2500 ? "2.5GHz" :
+		       pcie_speed == BNX2X_PCI_LINK_SPEED_5000 ? "5.0GHz" :
+		       pcie_speed == BNX2X_PCI_LINK_SPEED_8000 ? "8.0GHz" :
+		       "Unknown",
+		       dev->base_addr, bp->pdev->irq, dev->dev_addr);
 
 	return 0;
 
@@ -12647,17 +12718,11 @@ init_one_exit:
 	return rc;
 }
 
-static void bnx2x_remove_one(struct pci_dev *pdev)
+static void __bnx2x_remove(struct pci_dev *pdev,
+			   struct net_device *dev,
+			   struct bnx2x *bp,
+			   bool remove_netdev)
 {
-	struct net_device *dev = pci_get_drvdata(pdev);
-	struct bnx2x *bp;
-
-	if (!dev) {
-		dev_err(&pdev->dev, "BAD net device from bnx2x_init_one\n");
-		return;
-	}
-	bp = netdev_priv(dev);
-
 	/* Delete storage MAC address */
 	if (!NO_FCOE(bp)) {
 		rtnl_lock();
@@ -12670,7 +12735,15 @@ static void bnx2x_remove_one(struct pci_dev *pdev)
 	bnx2x_dcbnl_update_applist(bp, true);
 #endif
 
-	unregister_netdev(dev);
+	/* Close the interface - either directly or implicitly */
+	if (remove_netdev) {
+		unregister_netdev(dev);
+	} else {
+		rtnl_lock();
+		if (netif_running(dev))
+			bnx2x_close(dev);
+		rtnl_unlock();
+	}
 
 	/* Power on: we can't let PCI layer write to us while we are in D3 */
 	if (IS_PF(bp))
@@ -12692,6 +12765,12 @@ static void bnx2x_remove_one(struct pci_dev *pdev)
 	if (IS_VF(bp))
 		bnx2x_vfpf_release(bp);
 
+	/* Assumes no further PCIe PM changes will occur */
+	if (system_state == SYSTEM_POWER_OFF) {
+		pci_wake_from_d3(pdev, bp->wol);
+		pci_set_power_state(pdev, PCI_D3hot);
+	}
+
 	if (bp->regview)
 		iounmap(bp->regview);
 
@@ -12706,13 +12785,28 @@ static void bnx2x_remove_one(struct pci_dev *pdev)
 	}
 	bnx2x_free_mem_bp(bp);
 
-	free_netdev(dev);
+	if (remove_netdev)
+		free_netdev(dev);
 
 	if (atomic_read(&pdev->enable_cnt) == 1)
 		pci_release_regions(pdev);
 
 	pci_disable_device(pdev);
 	pci_set_drvdata(pdev, NULL);
+}
+
+static void bnx2x_remove_one(struct pci_dev *pdev)
+{
+	struct net_device *dev = pci_get_drvdata(pdev);
+	struct bnx2x *bp;
+
+	if (!dev) {
+		dev_err(&pdev->dev, "BAD net device from bnx2x_init_one\n");
+		return;
+	}
+	bp = netdev_priv(dev);
+
+	__bnx2x_remove(pdev, dev, bp, true);
 }
 
 static int bnx2x_eeh_nic_unload(struct bnx2x *bp)
@@ -12745,19 +12839,6 @@ static int bnx2x_eeh_nic_unload(struct bnx2x *bp)
 	netif_carrier_off(bp->dev);
 
 	return 0;
-}
-
-static void bnx2x_eeh_recover(struct bnx2x *bp)
-{
-	u32 val;
-
-	mutex_init(&bp->port.phy_mutex);
-
-
-	val = SHMEM_RD(bp, validity_map[BP_PORT(bp)]);
-	if ((val & (SHR_MEM_VALIDITY_DEV_INFO | SHR_MEM_VALIDITY_MB))
-		!= (SHR_MEM_VALIDITY_DEV_INFO | SHR_MEM_VALIDITY_MB))
-		BNX2X_ERR("BAD MCP validity signature\n");
 }
 
 /**
@@ -12828,6 +12909,10 @@ static pci_ers_result_t bnx2x_io_slot_reset(struct pci_dev *pdev)
 
 	if (netif_running(dev)) {
 		BNX2X_ERR("IO slot reset --> driver unload\n");
+
+		/* MCP should have been reset; Need to wait for validity */
+		bnx2x_init_shmem(bp);
+
 		if (IS_PF(bp) && SHMEM2_HAS(bp, drv_capabilities_flag)) {
 			u32 v;
 
@@ -12886,8 +12971,6 @@ static void bnx2x_io_resume(struct pci_dev *pdev)
 
 	rtnl_lock();
 
-	bnx2x_eeh_recover(bp);
-
 	bp->fw_seq = SHMEM_RD(bp, func_mb[BP_FW_MB_IDX(bp)].drv_mb_header) &
 							DRV_MSG_SEQ_NUMBER_MASK;
 
@@ -12905,6 +12988,29 @@ static const struct pci_error_handlers bnx2x_err_handler = {
 	.resume         = bnx2x_io_resume,
 };
 
+static void bnx2x_shutdown(struct pci_dev *pdev)
+{
+	struct net_device *dev = pci_get_drvdata(pdev);
+	struct bnx2x *bp;
+
+	if (!dev)
+		return;
+
+	bp = netdev_priv(dev);
+	if (!bp)
+		return;
+
+	rtnl_lock();
+	netif_device_detach(dev);
+	rtnl_unlock();
+
+	/* Don't remove the netdevice, as there are scenarios which will cause
+	 * the kernel to hang, e.g., when trying to remove bnx2i while the
+	 * rootfs is mounted from SAN.
+	 */
+	__bnx2x_remove(pdev, dev, bp, false);
+}
+
 static struct pci_driver bnx2x_pci_driver = {
 	.name        = DRV_MODULE_NAME,
 	.id_table    = bnx2x_pci_tbl,
@@ -12916,6 +13022,7 @@ static struct pci_driver bnx2x_pci_driver = {
 #ifdef CONFIG_BNX2X_SRIOV
 	.sriov_configure = bnx2x_sriov_configure,
 #endif
+	.shutdown    = bnx2x_shutdown,
 };
 
 static int __init bnx2x_init(void)
