@@ -157,11 +157,13 @@ static const char *brcmf_fws_get_tlv_name(enum brcmf_fws_tlv_type id)
  * @BRCMF_FWS_SKBSTATE_NEW: sk_buff is newly arrived in the driver.
  * @BRCMF_FWS_SKBSTATE_DELAYED: sk_buff had to wait on queue.
  * @BRCMF_FWS_SKBSTATE_SUPPRESSED: sk_buff has been suppressed by firmware.
+ * @BRCMF_FWS_SKBSTATE_TIM: allocated for TIM update info.
  */
 enum brcmf_fws_skb_state {
 	BRCMF_FWS_SKBSTATE_NEW,
 	BRCMF_FWS_SKBSTATE_DELAYED,
-	BRCMF_FWS_SKBSTATE_SUPPRESSED
+	BRCMF_FWS_SKBSTATE_SUPPRESSED,
+	BRCMF_FWS_SKBSTATE_TIM
 };
 
 /**
@@ -190,14 +192,16 @@ struct brcmf_skbuff_cb {
 /*
  * sk_buff control if flags
  *
- *	b[11]  - packet sent upon firmware request.
+ *	b[12]  - packet sent upon credit request.
+ *	b[11]  - packet sent upon packet request.
  *	b[10]  - packet only contains signalling data.
  *	b[9]   - packet is a tx packet.
  *	b[8]   - packet uses FIFO credit (non-pspoll).
  *	b[7]   - interface in AP mode.
- *	b[6:4] - AC FIFO number.
  *	b[3:0] - interface index.
  */
+#define BRCMF_SKB_IF_FLAGS_REQ_CREDIT_MASK	0x1000
+#define BRCMF_SKB_IF_FLAGS_REQ_CREDIT_SHIFT	12
 #define BRCMF_SKB_IF_FLAGS_REQUESTED_MASK	0x0800
 #define BRCMF_SKB_IF_FLAGS_REQUESTED_SHIFT	11
 #define BRCMF_SKB_IF_FLAGS_SIGNAL_ONLY_MASK	0x0400
@@ -208,8 +212,6 @@ struct brcmf_skbuff_cb {
 #define BRCMF_SKB_IF_FLAGS_CREDITCHECK_SHIFT	8
 #define BRCMF_SKB_IF_FLAGS_IF_AP_MASK		0x0080
 #define BRCMF_SKB_IF_FLAGS_IF_AP_SHIFT		7
-#define BRCMF_SKB_IF_FLAGS_FIFO_MASK		0x0070
-#define BRCMF_SKB_IF_FLAGS_FIFO_SHIFT		4
 #define BRCMF_SKB_IF_FLAGS_INDEX_MASK		0x000f
 #define BRCMF_SKB_IF_FLAGS_INDEX_SHIFT		0
 
@@ -246,7 +248,7 @@ struct brcmf_skbuff_cb {
 #define BRCMF_SKB_HTOD_TAG_HSLOT_MASK			0x00ffff00
 #define BRCMF_SKB_HTOD_TAG_HSLOT_SHIFT			8
 #define BRCMF_SKB_HTOD_TAG_FREERUN_MASK			0x000000ff
-#define BRCMF_SKB_HTOD_TAG_FREERUN_SHIFT			0
+#define BRCMF_SKB_HTOD_TAG_FREERUN_SHIFT		0
 
 #define brcmf_skb_htod_tag_set_field(skb, field, value) \
 	brcmu_maskset32(&(brcmf_skbcb(skb)->htod), \
@@ -278,6 +280,7 @@ struct brcmf_skbuff_cb {
 /**
  * enum brcmf_fws_fifo - fifo indices used by dongle firmware.
  *
+ * @BRCMF_FWS_FIFO_FIRST: first fifo, ie. background.
  * @BRCMF_FWS_FIFO_AC_BK: fifo for background traffic.
  * @BRCMF_FWS_FIFO_AC_BE: fifo for best-effort traffic.
  * @BRCMF_FWS_FIFO_AC_VI: fifo for video traffic.
@@ -287,7 +290,8 @@ struct brcmf_skbuff_cb {
  * @BRCMF_FWS_FIFO_COUNT: number of fifos.
  */
 enum brcmf_fws_fifo {
-	BRCMF_FWS_FIFO_AC_BK,
+	BRCMF_FWS_FIFO_FIRST,
+	BRCMF_FWS_FIFO_AC_BK = BRCMF_FWS_FIFO_FIRST,
 	BRCMF_FWS_FIFO_AC_BE,
 	BRCMF_FWS_FIFO_AC_VI,
 	BRCMF_FWS_FIFO_AC_VO,
@@ -343,6 +347,7 @@ enum brcmf_fws_mac_desc_state {
  * @transit_count: packet in transit to firmware.
  */
 struct brcmf_fws_mac_descriptor {
+	char name[16];
 	u8 occupied;
 	u8 mac_handle;
 	u8 interface_id;
@@ -356,7 +361,6 @@ struct brcmf_fws_mac_descriptor {
 	u8 seq[BRCMF_FWS_FIFO_COUNT];
 	struct pktq psq;
 	int transit_count;
-	int suppress_count;
 	int suppr_transit_count;
 	bool send_tim_signal;
 	u8 traffic_pending_bmp;
@@ -383,12 +387,10 @@ enum brcmf_fws_hanger_item_state {
  * struct brcmf_fws_hanger_item - single entry for tx pending packet.
  *
  * @state: entry is either free or occupied.
- * @gen: generation.
  * @pkt: packet itself.
  */
 struct brcmf_fws_hanger_item {
 	enum brcmf_fws_hanger_item_state state;
-	u8 gen;
 	struct sk_buff *pkt;
 };
 
@@ -434,6 +436,8 @@ struct brcmf_fws_info {
 	u32 fifo_credit_map;
 	u32 fifo_delay_map;
 	unsigned long borrow_defer_timestamp;
+	bool bus_flow_blocked;
+	bool creditmap_received;
 };
 
 /*
@@ -507,7 +511,6 @@ static void brcmf_fws_hanger_init(struct brcmf_fws_hanger *hanger)
 {
 	int i;
 
-	brcmf_dbg(TRACE, "enter\n");
 	memset(hanger, 0, sizeof(*hanger));
 	for (i = 0; i < ARRAY_SIZE(hanger->items); i++)
 		hanger->items[i].state = BRCMF_FWS_HANGER_ITEM_STATE_FREE;
@@ -517,7 +520,6 @@ static u32 brcmf_fws_hanger_get_free_slot(struct brcmf_fws_hanger *h)
 {
 	u32 i;
 
-	brcmf_dbg(TRACE, "enter\n");
 	i = (h->slot_pos + 1) % BRCMF_FWS_HANGER_MAXITEMS;
 
 	while (i != h->slot_pos) {
@@ -533,14 +535,12 @@ static u32 brcmf_fws_hanger_get_free_slot(struct brcmf_fws_hanger *h)
 	h->failed_slotfind++;
 	i = BRCMF_FWS_HANGER_MAXITEMS;
 done:
-	brcmf_dbg(TRACE, "exit: %d\n", i);
 	return i;
 }
 
 static int brcmf_fws_hanger_pushpkt(struct brcmf_fws_hanger *h,
-					   struct sk_buff *pkt, u32 slot_id)
+				    struct sk_buff *pkt, u32 slot_id)
 {
-	brcmf_dbg(TRACE, "enter\n");
 	if (slot_id >= BRCMF_FWS_HANGER_MAXITEMS)
 		return -ENOENT;
 
@@ -560,7 +560,6 @@ static int brcmf_fws_hanger_poppkt(struct brcmf_fws_hanger *h,
 					  u32 slot_id, struct sk_buff **pktout,
 					  bool remove_item)
 {
-	brcmf_dbg(TRACE, "enter\n");
 	if (slot_id >= BRCMF_FWS_HANGER_MAXITEMS)
 		return -ENOENT;
 
@@ -574,21 +573,16 @@ static int brcmf_fws_hanger_poppkt(struct brcmf_fws_hanger *h,
 	if (remove_item) {
 		h->items[slot_id].state = BRCMF_FWS_HANGER_ITEM_STATE_FREE;
 		h->items[slot_id].pkt = NULL;
-		h->items[slot_id].gen = 0xff;
 		h->popped++;
 	}
 	return 0;
 }
 
 static int brcmf_fws_hanger_mark_suppressed(struct brcmf_fws_hanger *h,
-						   u32 slot_id, u8 gen)
+					    u32 slot_id)
 {
-	brcmf_dbg(TRACE, "enter\n");
-
 	if (slot_id >= BRCMF_FWS_HANGER_MAXITEMS)
 		return -ENOENT;
-
-	h->items[slot_id].gen = gen;
 
 	if (h->items[slot_id].state != BRCMF_FWS_HANGER_ITEM_STATE_INUSE) {
 		brcmf_err("entry not in use\n");
@@ -596,25 +590,6 @@ static int brcmf_fws_hanger_mark_suppressed(struct brcmf_fws_hanger *h,
 	}
 
 	h->items[slot_id].state = BRCMF_FWS_HANGER_ITEM_STATE_INUSE_SUPPRESSED;
-	return 0;
-}
-
-static int brcmf_fws_hanger_get_genbit(struct brcmf_fws_hanger *hanger,
-					      struct sk_buff *pkt, u32 slot_id,
-					      int *gen)
-{
-	brcmf_dbg(TRACE, "enter\n");
-	*gen = 0xff;
-
-	if (slot_id >= BRCMF_FWS_HANGER_MAXITEMS)
-		return -ENOENT;
-
-	if (hanger->items[slot_id].state == BRCMF_FWS_HANGER_ITEM_STATE_FREE) {
-		brcmf_err("slot not in use\n");
-		return -EINVAL;
-	}
-
-	*gen = hanger->items[slot_id].gen;
 	return 0;
 }
 
@@ -627,7 +602,6 @@ static void brcmf_fws_hanger_cleanup(struct brcmf_fws_info *fws,
 	int i;
 	enum brcmf_fws_hanger_item_state s;
 
-	brcmf_dbg(TRACE, "enter: ifidx=%d\n", ifidx);
 	for (i = 0; i < ARRAY_SIZE(h->items); i++) {
 		s = h->items[i].state;
 		if (s == BRCMF_FWS_HANGER_ITEM_STATE_INUSE ||
@@ -642,6 +616,19 @@ static void brcmf_fws_hanger_cleanup(struct brcmf_fws_info *fws,
 			}
 		}
 	}
+}
+
+static void brcmf_fws_macdesc_set_name(struct brcmf_fws_info *fws,
+				       struct brcmf_fws_mac_descriptor *desc)
+{
+	if (desc == &fws->desc.other)
+		strlcpy(desc->name, "MAC-OTHER", sizeof(desc->name));
+	else if (desc->mac_handle)
+		scnprintf(desc->name, sizeof(desc->name), "MAC-%d:%d",
+			  desc->mac_handle, desc->interface_id);
+	else
+		scnprintf(desc->name, sizeof(desc->name), "MACIF:%d",
+			  desc->interface_id);
 }
 
 static void brcmf_fws_init_mac_descriptor(struct brcmf_fws_mac_descriptor *desc,
@@ -675,7 +662,6 @@ brcmf_fws_mac_descriptor_lookup(struct brcmf_fws_info *fws, u8 *ea)
 	struct brcmf_fws_mac_descriptor *entry;
 	int i;
 
-	brcmf_dbg(TRACE, "enter: ea=%pM\n", ea);
 	if (ea == NULL)
 		return ERR_PTR(-EINVAL);
 
@@ -695,31 +681,23 @@ brcmf_fws_find_mac_desc(struct brcmf_fws_info *fws, struct brcmf_if *ifp,
 {
 	struct brcmf_fws_mac_descriptor *entry = &fws->desc.other;
 	bool multicast;
-	enum nl80211_iftype iftype;
-
-	brcmf_dbg(TRACE, "enter: idx=%d\n", ifp->bssidx);
 
 	multicast = is_multicast_ether_addr(da);
-	iftype = brcmf_cfg80211_get_iftype(ifp);
 
-	/* Multicast destination and P2P clients get the interface entry.
-	 * STA gets the interface entry if there is no exact match. For
-	 * example, TDLS destinations have their own entry.
+	/* Multicast destination, STA and P2P clients get the interface entry.
+	 * STA/GC gets the Mac Entry for TDLS destinations, TDLS destinations
+	 * have their own entry.
 	 */
-	entry = NULL;
-	if ((multicast || iftype == NL80211_IFTYPE_STATION ||
-	     iftype == NL80211_IFTYPE_P2P_CLIENT) && ifp->fws_desc)
+	if (multicast && ifp->fws_desc) {
 		entry = ifp->fws_desc;
-
-	if (entry != NULL && iftype != NL80211_IFTYPE_STATION)
 		goto done;
+	}
 
 	entry = brcmf_fws_mac_descriptor_lookup(fws, da);
 	if (IS_ERR(entry))
-		entry = &fws->desc.other;
+		entry = ifp->fws_desc;
 
 done:
-	brcmf_dbg(TRACE, "exit: entry=%p\n", entry);
 	return entry;
 }
 
@@ -752,11 +730,7 @@ static void brcmf_fws_mac_desc_cleanup(struct brcmf_fws_info *fws,
 				       struct brcmf_fws_mac_descriptor *entry,
 				       int ifidx)
 {
-	brcmf_dbg(TRACE, "enter: entry=(ea=%pM, ifid=%d), ifidx=%d\n",
-		  entry->ea, entry->interface_id, ifidx);
 	if (entry->occupied && (ifidx == -1 || ifidx == entry->interface_id)) {
-		brcmf_dbg(TRACE, "flush psq: ifidx=%d, qlen=%d\n",
-			  ifidx, entry->psq.len);
 		brcmf_fws_psq_flush(fws, &entry->psq, ifidx);
 		entry->occupied = !!(entry->psq.len);
 	}
@@ -772,7 +746,6 @@ static void brcmf_fws_bus_txq_cleanup(struct brcmf_fws_info *fws,
 	int prec;
 	u32 hslot;
 
-	brcmf_dbg(TRACE, "enter: ifidx=%d\n", ifidx);
 	txq = brcmf_bus_gettxq(fws->drvr->bus_if);
 	if (IS_ERR(txq)) {
 		brcmf_dbg(TRACE, "no txq to clean up\n");
@@ -798,7 +771,6 @@ static void brcmf_fws_cleanup(struct brcmf_fws_info *fws, int ifidx)
 	struct brcmf_fws_mac_descriptor *table;
 	bool (*matchfn)(struct sk_buff *, void *) = NULL;
 
-	brcmf_dbg(TRACE, "enter: ifidx=%d\n", ifidx);
 	if (fws == NULL)
 		return;
 
@@ -815,36 +787,105 @@ static void brcmf_fws_cleanup(struct brcmf_fws_info *fws, int ifidx)
 	brcmf_fws_hanger_cleanup(fws, matchfn, ifidx);
 }
 
-static void brcmf_fws_tim_update(struct brcmf_fws_info *ctx,
-				 struct brcmf_fws_mac_descriptor *entry,
-				 int prec)
+static int brcmf_fws_hdrpush(struct brcmf_fws_info *fws, struct sk_buff *skb)
 {
-	brcmf_dbg(TRACE, "enter: ea=%pM\n", entry->ea);
-	if (entry->state == BRCMF_FWS_STATE_CLOSE) {
-		/* check delayedQ and suppressQ in one call using bitmap */
-		if (brcmu_pktq_mlen(&entry->psq, 3 << (prec * 2)) == 0)
-			entry->traffic_pending_bmp =
-				entry->traffic_pending_bmp & ~NBITVAL(prec);
-		else
-			entry->traffic_pending_bmp =
-				entry->traffic_pending_bmp | NBITVAL(prec);
+	struct brcmf_fws_mac_descriptor *entry = brcmf_skbcb(skb)->mac;
+	u8 *wlh;
+	u16 data_offset = 0;
+	u8 fillers;
+	__le32 pkttag = cpu_to_le32(brcmf_skbcb(skb)->htod);
+
+	brcmf_dbg(TRACE, "enter: ea=%pM, ifidx=%u (%u), pkttag=0x%08X, hslot=%d\n",
+		  entry->ea, entry->interface_id,
+		  brcmf_skb_if_flags_get_field(skb, INDEX),
+		  le32_to_cpu(pkttag), (le32_to_cpu(pkttag) >> 8) & 0xffff);
+	if (entry->send_tim_signal)
+		data_offset += 2 + BRCMF_FWS_TYPE_PENDING_TRAFFIC_BMP_LEN;
+
+	/* +2 is for Type[1] and Len[1] in TLV, plus TIM signal */
+	data_offset += 2 + BRCMF_FWS_TYPE_PKTTAG_LEN;
+	fillers = round_up(data_offset, 4) - data_offset;
+	data_offset += fillers;
+
+	skb_push(skb, data_offset);
+	wlh = skb->data;
+
+	wlh[0] = BRCMF_FWS_TYPE_PKTTAG;
+	wlh[1] = BRCMF_FWS_TYPE_PKTTAG_LEN;
+	memcpy(&wlh[2], &pkttag, sizeof(pkttag));
+	wlh += BRCMF_FWS_TYPE_PKTTAG_LEN + 2;
+
+	if (entry->send_tim_signal) {
+		entry->send_tim_signal = 0;
+		wlh[0] = BRCMF_FWS_TYPE_PENDING_TRAFFIC_BMP;
+		wlh[1] = BRCMF_FWS_TYPE_PENDING_TRAFFIC_BMP_LEN;
+		wlh[2] = entry->mac_handle;
+		wlh[3] = entry->traffic_pending_bmp;
+		brcmf_dbg(TRACE, "adding TIM info: %02X:%02X:%02X:%02X\n",
+			  wlh[0], wlh[1], wlh[2], wlh[3]);
+		wlh += BRCMF_FWS_TYPE_PENDING_TRAFFIC_BMP_LEN + 2;
+		entry->traffic_lastreported_bmp = entry->traffic_pending_bmp;
 	}
-	/* request a TIM update to firmware at the next piggyback opportunity */
+	if (fillers)
+		memset(wlh, BRCMF_FWS_TYPE_FILLER, fillers);
+
+	brcmf_proto_hdrpush(fws->drvr, brcmf_skb_if_flags_get_field(skb, INDEX),
+			    data_offset >> 2, skb);
+	return 0;
+}
+
+static bool brcmf_fws_tim_update(struct brcmf_fws_info *fws,
+				 struct brcmf_fws_mac_descriptor *entry,
+				 int prec, bool send_immediately)
+{
+	struct sk_buff *skb;
+	struct brcmf_bus *bus;
+	struct brcmf_skbuff_cb *skcb;
+	s32 err;
+	u32 len;
+
+	/* check delayedQ and suppressQ in one call using bitmap */
+	if (brcmu_pktq_mlen(&entry->psq, 3 << (prec * 2)) == 0)
+		entry->traffic_pending_bmp &= ~NBITVAL(prec);
+	else
+		entry->traffic_pending_bmp |= NBITVAL(prec);
+
+	entry->send_tim_signal = false;
 	if (entry->traffic_lastreported_bmp != entry->traffic_pending_bmp)
 		entry->send_tim_signal = true;
+	if (send_immediately && entry->send_tim_signal &&
+	    entry->state == BRCMF_FWS_STATE_CLOSE) {
+		/* create a dummy packet and sent that. The traffic          */
+		/* bitmap info will automatically be attached to that packet */
+		len = BRCMF_FWS_TYPE_PKTTAG_LEN + 2 +
+		      BRCMF_FWS_TYPE_PENDING_TRAFFIC_BMP_LEN + 2 +
+		      4 + fws->drvr->hdrlen;
+		skb = brcmu_pkt_buf_get_skb(len);
+		skb_pull(skb, len);
+		if (skb == NULL)
+			return false;
+		skcb = brcmf_skbcb(skb);
+		skcb->mac = entry;
+		skcb->state = BRCMF_FWS_SKBSTATE_TIM;
+		bus = fws->drvr->bus_if;
+		err = brcmf_fws_hdrpush(fws, skb);
+		if (err == 0)
+			err = brcmf_bus_txdata(bus, skb);
+		if (err)
+			brcmu_pkt_buf_free_skb(skb);
+		return true;
+	}
+	return false;
 }
 
 static void
 brcmf_fws_flow_control_check(struct brcmf_fws_info *fws, struct pktq *pq,
 			     u8 if_id)
 {
-	struct brcmf_if *ifp = fws->drvr->iflist[if_id];
+	struct brcmf_if *ifp = fws->drvr->iflist[!if_id ? 0 : if_id + 1];
 
 	if (WARN_ON(!ifp))
 		return;
-
-	brcmf_dbg(TRACE,
-		  "enter: bssidx=%d, ifidx=%d\n", ifp->bssidx, ifp->ifidx);
 
 	if ((ifp->netif_stop & BRCMF_NETIF_STOP_REASON_FWS_FC) &&
 	    pq->len <= BRCMF_FWS_FLOWCONTROL_LOWATER)
@@ -876,8 +917,9 @@ int brcmf_fws_macdesc_indicate(struct brcmf_fws_info *fws, u8 type, u8 *data)
 
 	entry = &fws->desc.nodes[mac_handle & 0x1F];
 	if (type == BRCMF_FWS_TYPE_MACDESC_DEL) {
-		brcmf_dbg(TRACE, "deleting mac %pM idx %d\n", addr, ifidx);
 		if (entry->occupied) {
+			brcmf_dbg(TRACE, "deleting %s mac %pM\n",
+				  entry->name, addr);
 			brcmf_fws_mac_desc_cleanup(fws, entry, -1);
 			brcmf_fws_clear_mac_descriptor(entry);
 		} else
@@ -885,25 +927,28 @@ int brcmf_fws_macdesc_indicate(struct brcmf_fws_info *fws, u8 type, u8 *data)
 		return 0;
 	}
 
-	brcmf_dbg(TRACE,
-		  "add mac %pM handle %u idx %d\n", addr, mac_handle, ifidx);
 	existing = brcmf_fws_mac_descriptor_lookup(fws, addr);
 	if (IS_ERR(existing)) {
 		if (!entry->occupied) {
 			entry->mac_handle = mac_handle;
 			brcmf_fws_init_mac_descriptor(entry, addr, ifidx);
+			brcmf_fws_macdesc_set_name(fws, entry);
 			brcmu_pktq_init(&entry->psq, BRCMF_FWS_PSQ_PREC_COUNT,
 					BRCMF_FWS_PSQ_LEN);
+			brcmf_dbg(TRACE, "add %s mac %pM\n", entry->name, addr);
 		} else {
 			fws->stats.mac_update_failed++;
 		}
 	} else {
 		if (entry != existing) {
-			brcmf_dbg(TRACE, "relocate mac\n");
+			brcmf_dbg(TRACE, "copy mac %s\n", existing->name);
 			memcpy(entry, existing,
 			       offsetof(struct brcmf_fws_mac_descriptor, psq));
 			entry->mac_handle = mac_handle;
 			brcmf_fws_clear_mac_descriptor(existing);
+			brcmf_fws_macdesc_set_name(fws, entry);
+			brcmf_dbg(TRACE, "relocate %s mac %pM\n", entry->name,
+				  addr);
 		} else {
 			brcmf_dbg(TRACE, "use existing\n");
 			WARN_ON(entry->mac_handle != mac_handle);
@@ -918,7 +963,6 @@ static int brcmf_fws_macdesc_state_indicate(struct brcmf_fws_info *fws,
 {
 	struct brcmf_fws_mac_descriptor *entry;
 	u8 mac_handle;
-	int i;
 
 	mac_handle = data[0];
 	entry = &fws->desc.nodes[mac_handle & 0x1F];
@@ -926,16 +970,18 @@ static int brcmf_fws_macdesc_state_indicate(struct brcmf_fws_info *fws,
 		fws->stats.mac_ps_update_failed++;
 		return -ESRCH;
 	}
-
-	/* a state update should wipe old credits? */
+	/* a state update should wipe old credits */
 	entry->requested_credit = 0;
+	entry->requested_packet = 0;
 	if (type == BRCMF_FWS_TYPE_MAC_OPEN) {
 		entry->state = BRCMF_FWS_STATE_OPEN;
 		return BRCMF_FWS_RET_OK_SCHEDULE;
 	} else {
 		entry->state = BRCMF_FWS_STATE_CLOSE;
-		for (i = BRCMF_FWS_FIFO_AC_BE; i < NL80211_NUM_ACS; i++)
-			brcmf_fws_tim_update(fws, entry, i);
+		brcmf_fws_tim_update(fws, entry, BRCMF_FWS_FIFO_AC_BK, false);
+		brcmf_fws_tim_update(fws, entry, BRCMF_FWS_FIFO_AC_BE, false);
+		brcmf_fws_tim_update(fws, entry, BRCMF_FWS_FIFO_AC_VI, false);
+		brcmf_fws_tim_update(fws, entry, BRCMF_FWS_FIFO_AC_VO, true);
 	}
 	return BRCMF_FWS_RET_OK_NOSCHEDULE;
 }
@@ -949,7 +995,6 @@ static int brcmf_fws_interface_state_indicate(struct brcmf_fws_info *fws,
 
 	ifidx = data[0];
 
-	brcmf_dbg(TRACE, "enter: ifidx=%d\n", ifidx);
 	if (ifidx >= BRCMF_MAX_IFS) {
 		ret = -ERANGE;
 		goto fail;
@@ -961,6 +1006,8 @@ static int brcmf_fws_interface_state_indicate(struct brcmf_fws_info *fws,
 		goto fail;
 	}
 
+	brcmf_dbg(TRACE, "%s (%d): %s\n", brcmf_fws_get_tlv_name(type), type,
+		  entry->name);
 	switch (type) {
 	case BRCMF_FWS_TYPE_INTERFACE_OPEN:
 		entry->state = BRCMF_FWS_STATE_OPEN;
@@ -991,6 +1038,9 @@ static int brcmf_fws_request_indicate(struct brcmf_fws_info *fws, u8 type,
 		return -ESRCH;
 	}
 
+	brcmf_dbg(TRACE, "%s (%d): %s cnt %d bmp %d\n",
+		  brcmf_fws_get_tlv_name(type), type, entry->name,
+		  data[0], data[2]);
 	if (type == BRCMF_FWS_TYPE_MAC_REQUEST_CREDIT)
 		entry->requested_credit = data[0];
 	else
@@ -998,6 +1048,37 @@ static int brcmf_fws_request_indicate(struct brcmf_fws_info *fws, u8 type,
 
 	entry->ac_bitmap = data[2];
 	return BRCMF_FWS_RET_OK_SCHEDULE;
+}
+
+static int brcmf_fws_macdesc_use_credit(struct brcmf_fws_mac_descriptor *entry,
+					struct sk_buff *skb)
+{
+	int use_credit = 1;
+
+	if (entry->state == BRCMF_FWS_STATE_CLOSE) {
+		if (entry->requested_credit > 0) {
+			/*
+			 * if the packet was pulled out while destination is in
+			 * closed state but had a non-zero packets requested,
+			 * then this should not count against the FIFO credit.
+			 * That is due to the fact that the firmware will
+			 * most likely hold onto this packet until a suitable
+			 * time later to push it to the appropriate AC FIFO.
+			 */
+			entry->requested_credit--;
+			brcmf_skb_if_flags_set_field(skb, REQ_CREDIT, 1);
+			use_credit = 0;
+		} else if (entry->requested_packet > 0) {
+			entry->requested_packet--;
+			brcmf_skb_if_flags_set_field(skb, REQUESTED, 1);
+			use_credit = 0;
+		}
+	} else {
+		WARN_ON(entry->requested_credit);
+		WARN_ON(entry->requested_packet);
+	}
+	brcmf_skb_if_flags_set_field(skb, CREDITCHECK, use_credit);
+	return use_credit;
 }
 
 static void brcmf_fws_return_credits(struct brcmf_fws_info *fws,
@@ -1009,6 +1090,8 @@ static void brcmf_fws_return_credits(struct brcmf_fws_info *fws,
 
 	if (!credits)
 		return;
+
+	fws->fifo_credit_map |= 1 << fifo;
 
 	if ((fifo == BRCMF_FWS_FIFO_AC_BE) &&
 	    (fws->credits_borrowed[0])) {
@@ -1031,7 +1114,6 @@ static void brcmf_fws_return_credits(struct brcmf_fws_info *fws,
 		}
 	}
 
-	fws->fifo_credit_map |= 1 << fifo;
 	fws->fifo_credit[fifo] += credits;
 }
 
@@ -1042,24 +1124,22 @@ static void brcmf_fws_schedule_deq(struct brcmf_fws_info *fws)
 		queue_work(fws->fws_wq, &fws->fws_dequeue_work);
 }
 
-static void brcmf_skb_pick_up_credit(struct brcmf_fws_info *fws, int fifo,
+static void brcmf_fws_skb_pickup_credit(struct brcmf_fws_info *fws, int fifo,
 				     struct sk_buff *p)
 {
 	struct brcmf_fws_mac_descriptor *entry = brcmf_skbcb(p)->mac;
 
-	if (brcmf_skbcb(p)->if_flags & BRCMF_SKB_IF_FLAGS_CREDITCHECK_MASK) {
-		if (fws->fcmode != BRCMF_FWS_FCMODE_IMPLIED_CREDIT)
-			return;
+	if (brcmf_skbcb(p)->if_flags & BRCMF_SKB_IF_FLAGS_CREDITCHECK_MASK)
 		brcmf_fws_return_credits(fws, fifo, 1);
-	} else {
+	else if (brcmf_skb_if_flags_get_field(p, REQ_CREDIT) &&
+		 entry->state == BRCMF_FWS_STATE_CLOSE)
 		/*
 		 * if this packet did not count against FIFO credit, it
-		 * must have taken a requested_credit from the destination
+		 * could have taken a requested_credit from the destination
 		 * entry (for pspoll etc.)
 		 */
-		if (!brcmf_skb_if_flags_get_field(p, REQUESTED))
-			entry->requested_credit++;
-	}
+		entry->requested_credit++;
+
 	brcmf_fws_schedule_deq(fws);
 }
 
@@ -1078,7 +1158,7 @@ static int brcmf_fws_enq(struct brcmf_fws_info *fws,
 		return -ENOENT;
 	}
 
-	brcmf_dbg(TRACE, "enter: ea=%pM, qlen=%d\n", entry->ea, entry->psq.len);
+	brcmf_dbg(DATA, "enter: fifo %d skb %p\n", fifo, p);
 	if (state == BRCMF_FWS_SKBSTATE_SUPPRESSED) {
 		prec += 1;
 		qfull_stat = &fws->stats.supprq_full_error;
@@ -1095,14 +1175,12 @@ static int brcmf_fws_enq(struct brcmf_fws_info *fws,
 
 	/* update the sk_buff state */
 	brcmf_skbcb(p)->state = state;
-	if (state == BRCMF_FWS_SKBSTATE_SUPPRESSED)
-		entry->suppress_count++;
 
 	/*
 	 * A packet has been pushed so update traffic
 	 * availability bitmap, if applicable
 	 */
-	brcmf_fws_tim_update(fws, entry, fifo);
+	brcmf_fws_tim_update(fws, entry, fifo, true);
 	brcmf_fws_flow_control_check(fws, &entry->psq,
 				     brcmf_skb_if_flags_get_field(p, INDEX));
 	return 0;
@@ -1113,7 +1191,6 @@ static struct sk_buff *brcmf_fws_deq(struct brcmf_fws_info *fws, int fifo)
 	struct brcmf_fws_mac_descriptor *table;
 	struct brcmf_fws_mac_descriptor *entry;
 	struct sk_buff *p;
-	int use_credit = 1;
 	int num_nodes;
 	int node_pos;
 	int prec_out;
@@ -1137,9 +1214,8 @@ static struct sk_buff *brcmf_fws_deq(struct brcmf_fws_info *fws, int fifo)
 		p = brcmu_pktq_mdeq(&entry->psq, pmsk << (fifo * 2), &prec_out);
 		if (p == NULL) {
 			if (entry->suppressed) {
-				if (entry->suppr_transit_count >
-				    entry->suppress_count)
-					return NULL;
+				if (entry->suppr_transit_count)
+					continue;
 				entry->suppressed = false;
 				p = brcmu_pktq_mdeq(&entry->psq,
 						    1 << (fifo * 2), &prec_out);
@@ -1148,26 +1224,7 @@ static struct sk_buff *brcmf_fws_deq(struct brcmf_fws_info *fws, int fifo)
 		if  (p == NULL)
 			continue;
 
-		/* did the packet come from suppress sub-queue? */
-		if (entry->requested_credit > 0) {
-			entry->requested_credit--;
-			/*
-			 * if the packet was pulled out while destination is in
-			 * closed state but had a non-zero packets requested,
-			 * then this should not count against the FIFO credit.
-			 * That is due to the fact that the firmware will
-			 * most likely hold onto this packet until a suitable
-			 * time later to push it to the appropriate AC FIFO.
-			 */
-			if (entry->state == BRCMF_FWS_STATE_CLOSE)
-				use_credit = 0;
-		} else if (entry->requested_packet > 0) {
-			entry->requested_packet--;
-			brcmf_skb_if_flags_set_field(p, REQUESTED, 1);
-			if (entry->state == BRCMF_FWS_STATE_CLOSE)
-				use_credit = 0;
-		}
-		brcmf_skb_if_flags_set_field(p, CREDITCHECK, use_credit);
+		brcmf_fws_macdesc_use_credit(entry, p);
 
 		/* move dequeue position to ensure fair round-robin */
 		fws->deq_node_pos[fifo] = (node_pos + i + 1) % num_nodes;
@@ -1179,7 +1236,7 @@ static struct sk_buff *brcmf_fws_deq(struct brcmf_fws_info *fws, int fifo)
 		 * A packet has been picked up, update traffic
 		 * availability bitmap, if applicable
 		 */
-		brcmf_fws_tim_update(fws, entry, fifo);
+		brcmf_fws_tim_update(fws, entry, fifo, false);
 
 		/*
 		 * decrement total enqueued fifo packets and
@@ -1192,7 +1249,7 @@ static struct sk_buff *brcmf_fws_deq(struct brcmf_fws_info *fws, int fifo)
 	}
 	p = NULL;
 done:
-	brcmf_dbg(TRACE, "exit: fifo %d skb %p\n", fifo, p);
+	brcmf_dbg(DATA, "exit: fifo %d skb %p\n", fifo, p);
 	return p;
 }
 
@@ -1202,22 +1259,26 @@ static int brcmf_fws_txstatus_suppressed(struct brcmf_fws_info *fws, int fifo,
 	struct brcmf_fws_mac_descriptor *entry = brcmf_skbcb(skb)->mac;
 	u32 hslot;
 	int ret;
+	u8 ifidx;
 
 	hslot = brcmf_skb_htod_tag_get_field(skb, HSLOT);
 
 	/* this packet was suppressed */
-	if (!entry->suppressed || entry->generation != genbit) {
+	if (!entry->suppressed) {
 		entry->suppressed = true;
-		entry->suppress_count = brcmu_pktq_mlen(&entry->psq,
-							1 << (fifo * 2 + 1));
 		entry->suppr_transit_count = entry->transit_count;
+		brcmf_dbg(DATA, "suppress %s: transit %d\n",
+			  entry->name, entry->transit_count);
 	}
 
 	entry->generation = genbit;
 
-	ret = brcmf_fws_enq(fws, BRCMF_FWS_SKBSTATE_SUPPRESSED, fifo, skb);
+	ret = brcmf_proto_hdrpull(fws->drvr, false, &ifidx, skb);
+	if (ret == 0)
+		ret = brcmf_fws_enq(fws, BRCMF_FWS_SKBSTATE_SUPPRESSED, fifo,
+				    skb);
 	if (ret != 0) {
-		/* suppress q is full, drop this packet */
+		/* suppress q is full or hdrpull failed, drop this packet */
 		brcmf_fws_hanger_poppkt(&fws->hanger, hslot, &skb,
 					true);
 	} else {
@@ -1225,26 +1286,24 @@ static int brcmf_fws_txstatus_suppressed(struct brcmf_fws_info *fws, int fifo,
 		 * Mark suppressed to avoid a double free during
 		 * wlfc cleanup
 		 */
-		brcmf_fws_hanger_mark_suppressed(&fws->hanger, hslot,
-						 genbit);
-		entry->suppress_count++;
+		brcmf_fws_hanger_mark_suppressed(&fws->hanger, hslot);
 	}
 
 	return ret;
 }
 
 static int
-brcmf_fws_txstatus_process(struct brcmf_fws_info *fws, u8 flags, u32 hslot,
+brcmf_fws_txs_process(struct brcmf_fws_info *fws, u8 flags, u32 hslot,
 			   u32 genbit)
 {
 	u32 fifo;
 	int ret;
 	bool remove_from_hanger = true;
 	struct sk_buff *skb;
+	struct brcmf_skbuff_cb *skcb;
 	struct brcmf_fws_mac_descriptor *entry = NULL;
 
-	brcmf_dbg(TRACE, "status: flags=0x%X, hslot=%d\n",
-		  flags, hslot);
+	brcmf_dbg(DATA, "flags %d\n", flags);
 
 	if (flags == BRCMF_FWS_TXSTATUS_DISCARD)
 		fws->stats.txs_discard++;
@@ -1266,26 +1325,31 @@ brcmf_fws_txstatus_process(struct brcmf_fws_info *fws, u8 flags, u32 hslot,
 		return ret;
 	}
 
-	entry = brcmf_skbcb(skb)->mac;
+	skcb = brcmf_skbcb(skb);
+	entry = skcb->mac;
 	if (WARN_ON(!entry)) {
 		brcmu_pkt_buf_free_skb(skb);
 		return -EINVAL;
 	}
+	entry->transit_count--;
+	if (entry->suppressed && entry->suppr_transit_count)
+		entry->suppr_transit_count--;
+
+	brcmf_dbg(DATA, "%s flags %X htod %X\n", entry->name, skcb->if_flags,
+		  skcb->htod);
 
 	/* pick up the implicit credit from this packet */
 	fifo = brcmf_skb_htod_tag_get_field(skb, FIFO);
-	brcmf_skb_pick_up_credit(fws, fifo, skb);
+	if (fws->fcmode == BRCMF_FWS_FCMODE_IMPLIED_CREDIT ||
+	    !(brcmf_skbcb(skb)->if_flags & BRCMF_SKB_IF_FLAGS_CREDITCHECK_MASK))
+		brcmf_fws_skb_pickup_credit(fws, fifo, skb);
 
 	if (!remove_from_hanger)
 		ret = brcmf_fws_txstatus_suppressed(fws, fifo, skb, genbit);
 
-	if (remove_from_hanger || ret) {
-		entry->transit_count--;
-		if (entry->suppressed)
-			entry->suppr_transit_count--;
-
+	if (remove_from_hanger || ret)
 		brcmf_txfinalize(fws->drvr, skb, true);
-	}
+
 	return 0;
 }
 
@@ -1299,11 +1363,11 @@ static int brcmf_fws_fifocreditback_indicate(struct brcmf_fws_info *fws,
 		return BRCMF_FWS_RET_OK_NOSCHEDULE;
 	}
 
-	brcmf_dbg(TRACE, "enter: data %pM\n", data);
+	brcmf_dbg(DATA, "enter: data %pM\n", data);
 	for (i = 0; i < BRCMF_FWS_FIFO_COUNT; i++)
 		brcmf_fws_return_credits(fws, i, data[i]);
 
-	brcmf_dbg(INFO, "map: credit %x delay %x\n", fws->fifo_credit_map,
+	brcmf_dbg(DATA, "map: credit %x delay %x\n", fws->fifo_credit_map,
 		  fws->fifo_delay_map);
 	return BRCMF_FWS_RET_OK_SCHEDULE;
 }
@@ -1323,7 +1387,7 @@ static int brcmf_fws_txstatus_indicate(struct brcmf_fws_info *fws, u8 *data)
 	hslot = brcmf_txstatus_get_field(status, HSLOT);
 	genbit = brcmf_txstatus_get_field(status, GENERATION);
 
-	return brcmf_fws_txstatus_process(fws, flags, hslot, genbit);
+	return brcmf_fws_txs_process(fws, flags, hslot, genbit);
 }
 
 static int brcmf_fws_dbg_seqnum_check(struct brcmf_fws_info *fws, u8 *data)
@@ -1331,7 +1395,7 @@ static int brcmf_fws_dbg_seqnum_check(struct brcmf_fws_info *fws, u8 *data)
 	__le32 timestamp;
 
 	memcpy(&timestamp, &data[2], sizeof(timestamp));
-	brcmf_dbg(INFO, "received: seq %d, timestamp %d\n", data[1],
+	brcmf_dbg(CTL, "received: seq %d, timestamp %d\n", data[1],
 		  le32_to_cpu(timestamp));
 	return 0;
 }
@@ -1364,6 +1428,10 @@ static int brcmf_fws_notify_credit_map(struct brcmf_if *ifp,
 		brcmf_err("event payload too small (%d)\n", e->datalen);
 		return -EINVAL;
 	}
+	if (fws->creditmap_received)
+		return 0;
+
+	fws->creditmap_received = true;
 
 	brcmf_dbg(TRACE, "enter: credits %pM\n", credits);
 	brcmf_fws_lock(ifp->drvr, flags);
@@ -1392,7 +1460,7 @@ int brcmf_fws_hdrpull(struct brcmf_pub *drvr, int ifidx, s16 signal_len,
 	s32 status;
 	s32 err;
 
-	brcmf_dbg(TRACE, "enter: ifidx %d, skblen %u, sig %d\n",
+	brcmf_dbg(HDRS, "enter: ifidx %d, skblen %u, sig %d\n",
 		  ifidx, skb->len, signal_len);
 
 	WARN_ON(signal_len > skb->len);
@@ -1426,14 +1494,15 @@ int brcmf_fws_hdrpull(struct brcmf_pub *drvr, int ifidx, s16 signal_len,
 		len = signal_data[1];
 		data = signal_data + 2;
 
-		brcmf_dbg(INFO, "tlv type=%d (%s), len=%d, data[0]=%d\n", type,
-			  brcmf_fws_get_tlv_name(type), len, *data);
+		brcmf_dbg(HDRS, "tlv type=%s (%d), len=%d (%d)\n",
+			  brcmf_fws_get_tlv_name(type), type, len,
+			  brcmf_fws_get_tlv_len(fws, type));
 
 		/* abort parsing when length invalid */
 		if (data_len < len + 2)
 			break;
 
-		if (len != brcmf_fws_get_tlv_len(fws, type))
+		if (len < brcmf_fws_get_tlv_len(fws, type))
 			break;
 
 		err = BRCMF_FWS_RET_OK_NOSCHEDULE;
@@ -1502,64 +1571,32 @@ int brcmf_fws_hdrpull(struct brcmf_pub *drvr, int ifidx, s16 signal_len,
 	return 0;
 }
 
-static int brcmf_fws_hdrpush(struct brcmf_fws_info *fws, struct sk_buff *skb)
-{
-	struct brcmf_fws_mac_descriptor *entry = brcmf_skbcb(skb)->mac;
-	u8 *wlh;
-	u16 data_offset = 0;
-	u8 fillers;
-	__le32 pkttag = cpu_to_le32(brcmf_skbcb(skb)->htod);
-
-	brcmf_dbg(TRACE, "enter: ea=%pM, ifidx=%u, pkttag=0x%08X\n",
-		  entry->ea, entry->interface_id, le32_to_cpu(pkttag));
-	if (entry->send_tim_signal)
-		data_offset += 2 + BRCMF_FWS_TYPE_PENDING_TRAFFIC_BMP_LEN;
-
-	/* +2 is for Type[1] and Len[1] in TLV, plus TIM signal */
-	data_offset += 2 + BRCMF_FWS_TYPE_PKTTAG_LEN;
-	fillers = round_up(data_offset, 4) - data_offset;
-	data_offset += fillers;
-
-	skb_push(skb, data_offset);
-	wlh = skb->data;
-
-	wlh[0] = BRCMF_FWS_TYPE_PKTTAG;
-	wlh[1] = BRCMF_FWS_TYPE_PKTTAG_LEN;
-	memcpy(&wlh[2], &pkttag, sizeof(pkttag));
-	wlh += BRCMF_FWS_TYPE_PKTTAG_LEN + 2;
-
-	if (entry->send_tim_signal) {
-		entry->send_tim_signal = 0;
-		wlh[0] = BRCMF_FWS_TYPE_PENDING_TRAFFIC_BMP;
-		wlh[1] = BRCMF_FWS_TYPE_PENDING_TRAFFIC_BMP_LEN;
-		wlh[2] = entry->mac_handle;
-		wlh[3] = entry->traffic_pending_bmp;
-		wlh += BRCMF_FWS_TYPE_PENDING_TRAFFIC_BMP_LEN + 2;
-		entry->traffic_lastreported_bmp = entry->traffic_pending_bmp;
-	}
-	if (fillers)
-		memset(wlh, BRCMF_FWS_TYPE_FILLER, fillers);
-
-	brcmf_proto_hdrpush(fws->drvr, brcmf_skb_if_flags_get_field(skb, INDEX),
-			    data_offset >> 2, skb);
-	return 0;
-}
-
 static int brcmf_fws_precommit_skb(struct brcmf_fws_info *fws, int fifo,
 				   struct sk_buff *p)
 {
 	struct brcmf_skbuff_cb *skcb = brcmf_skbcb(p);
 	struct brcmf_fws_mac_descriptor *entry = skcb->mac;
 	int rc = 0;
-	bool header_needed;
+	bool first_time;
 	int hslot = BRCMF_FWS_HANGER_MAXITEMS;
 	u8 free_ctr;
-	u8 ifidx;
 	u8 flags;
 
-	header_needed = skcb->state != BRCMF_FWS_SKBSTATE_SUPPRESSED;
+	first_time = skcb->state != BRCMF_FWS_SKBSTATE_SUPPRESSED;
 
-	if (header_needed) {
+	brcmf_skb_if_flags_set_field(p, TRANSMIT, 1);
+	brcmf_skb_htod_tag_set_field(p, FIFO, fifo);
+	brcmf_skb_htod_tag_set_field(p, GENERATION, entry->generation);
+	flags = BRCMF_FWS_HTOD_FLAG_PKTFROMHOST;
+	if (!(skcb->if_flags & BRCMF_SKB_IF_FLAGS_CREDITCHECK_MASK)) {
+		/*
+		 * Indicate that this packet is being sent in response to an
+		 * explicit request from the firmware side.
+		 */
+		flags |= BRCMF_FWS_HTOD_FLAG_PKT_REQUESTED;
+	}
+	brcmf_skb_htod_tag_set_field(p, FLAGS, flags);
+	if (first_time) {
 		/* obtaining free slot may fail, but that will be caught
 		 * by the hanger push. This assures the packet has a BDC
 		 * header upon return.
@@ -1568,47 +1605,20 @@ static int brcmf_fws_precommit_skb(struct brcmf_fws_info *fws, int fifo,
 		free_ctr = entry->seq[fifo];
 		brcmf_skb_htod_tag_set_field(p, HSLOT, hslot);
 		brcmf_skb_htod_tag_set_field(p, FREERUN, free_ctr);
-		brcmf_skb_htod_tag_set_field(p, GENERATION, 1);
-		entry->transit_count++;
-	}
-	brcmf_skb_if_flags_set_field(p, TRANSMIT, 1);
-	brcmf_skb_htod_tag_set_field(p, FIFO, fifo);
-
-	flags = BRCMF_FWS_HTOD_FLAG_PKTFROMHOST;
-	if (!(skcb->if_flags & BRCMF_SKB_IF_FLAGS_CREDITCHECK_MASK)) {
-		/*
-		Indicate that this packet is being sent in response to an
-		explicit request from the firmware side.
-		*/
-		flags |= BRCMF_FWS_HTOD_FLAG_PKT_REQUESTED;
-	}
-	brcmf_skb_htod_tag_set_field(p, FLAGS, flags);
-	if (header_needed) {
-		brcmf_fws_hdrpush(fws, p);
 		rc = brcmf_fws_hanger_pushpkt(&fws->hanger, p, hslot);
 		if (rc)
 			brcmf_err("hanger push failed: rc=%d\n", rc);
-	} else {
-		int gen;
-
-		/* remove old header */
-		rc = brcmf_proto_hdrpull(fws->drvr, false, &ifidx, p);
-		if (rc == 0) {
-			hslot = brcmf_skb_htod_tag_get_field(p, HSLOT);
-			brcmf_fws_hanger_get_genbit(&fws->hanger, p,
-						    hslot, &gen);
-			brcmf_skb_htod_tag_set_field(p, GENERATION, gen);
-
-			/* push new header */
-			brcmf_fws_hdrpush(fws, p);
-		}
 	}
+
+	if (rc == 0)
+		brcmf_fws_hdrpush(fws, p);
 
 	return rc;
 }
 
 static void
-brcmf_fws_rollback_toq(struct brcmf_fws_info *fws, struct sk_buff *skb)
+brcmf_fws_rollback_toq(struct brcmf_fws_info *fws,
+		       struct sk_buff *skb, int fifo)
 {
 	/*
 	put the packet back to the head of queue
@@ -1622,11 +1632,8 @@ brcmf_fws_rollback_toq(struct brcmf_fws_info *fws, struct sk_buff *skb)
 	enum brcmf_fws_skb_state state;
 	struct sk_buff *pktout;
 	int rc = 0;
-	int fifo;
 	int hslot;
-	u8 ifidx;
 
-	fifo = brcmf_skb_if_flags_get_field(skb, FIFO);
 	state = brcmf_skbcb(skb)->state;
 	entry = brcmf_skbcb(skb)->mac;
 
@@ -1641,17 +1648,6 @@ brcmf_fws_rollback_toq(struct brcmf_fws_info *fws, struct sk_buff *skb)
 			}
 		} else {
 			hslot = brcmf_skb_htod_tag_get_field(skb, HSLOT);
-
-			/* remove header first */
-			rc = brcmf_proto_hdrpull(fws->drvr, false, &ifidx, skb);
-			if (rc) {
-				brcmf_err("header removal failed\n");
-				/* free the hanger slot */
-				brcmf_fws_hanger_poppkt(&fws->hanger, hslot,
-							&pktout, true);
-				rc = -EINVAL;
-				goto fail;
-			}
 
 			/* delay-q packets are going to delay-q */
 			pktout = brcmu_pktq_penq_head(&entry->psq,
@@ -1668,33 +1664,28 @@ brcmf_fws_rollback_toq(struct brcmf_fws_info *fws, struct sk_buff *skb)
 			/* decrement sequence count */
 			entry->seq[fifo]--;
 		}
-		/*
-		if this packet did not count against FIFO credit, it must have
-		taken a requested_credit from the firmware (for pspoll etc.)
-		*/
-		if (!(brcmf_skbcb(skb)->if_flags &
-		      BRCMF_SKB_IF_FLAGS_CREDITCHECK_MASK))
-			entry->requested_credit++;
 	} else {
 		brcmf_err("no mac entry linked\n");
 		rc = -ENOENT;
 	}
 
-
-fail:
 	if (rc) {
-		brcmf_txfinalize(fws->drvr, skb, false);
+		brcmf_fws_bustxfail(fws, skb);
 		fws->stats.rollback_failed++;
-	} else
+	} else {
 		fws->stats.rollback_success++;
+		brcmf_fws_skb_pickup_credit(fws, fifo, skb);
+	}
 }
 
 static int brcmf_fws_borrow_credit(struct brcmf_fws_info *fws)
 {
 	int lender_ac;
 
-	if (time_after(fws->borrow_defer_timestamp, jiffies))
+	if (time_after(fws->borrow_defer_timestamp, jiffies)) {
+		fws->fifo_credit_map &= ~(1 << BRCMF_FWS_FIFO_AC_BE);
 		return -ENAVAIL;
+	}
 
 	for (lender_ac = 0; lender_ac <= BRCMF_FWS_FIFO_AC_VO; lender_ac++) {
 		if (fws->fifo_credit[lender_ac]) {
@@ -1702,10 +1693,12 @@ static int brcmf_fws_borrow_credit(struct brcmf_fws_info *fws)
 			fws->fifo_credit[lender_ac]--;
 			if (fws->fifo_credit[lender_ac] == 0)
 				fws->fifo_credit_map &= ~(1 << lender_ac);
-			brcmf_dbg(TRACE, "borrow credit from: %d\n", lender_ac);
+			fws->fifo_credit_map |= (1 << BRCMF_FWS_FIFO_AC_BE);
+			brcmf_dbg(DATA, "borrow credit from: %d\n", lender_ac);
 			return 0;
 		}
 	}
+	fws->fifo_credit_map &= ~(1 << BRCMF_FWS_FIFO_AC_BE);
 	return -ENAVAIL;
 }
 
@@ -1714,33 +1707,9 @@ static int brcmf_fws_consume_credit(struct brcmf_fws_info *fws, int fifo,
 {
 	struct brcmf_fws_mac_descriptor *entry = brcmf_skbcb(skb)->mac;
 	int *credit = &fws->fifo_credit[fifo];
-	int use_credit = 1;
 
-	brcmf_dbg(TRACE, "enter: ac=%d, credits=%d\n", fifo, *credit);
-
-	if (entry->requested_credit > 0) {
-		/*
-		 * if the packet was pulled out while destination is in
-		 * closed state but had a non-zero packets requested,
-		 * then this should not count against the FIFO credit.
-		 * That is due to the fact that the firmware will
-		 * most likely hold onto this packet until a suitable
-		 * time later to push it to the appropriate AC FIFO.
-		 */
-		entry->requested_credit--;
-		if (entry->state == BRCMF_FWS_STATE_CLOSE)
-			use_credit = 0;
-	} else if (entry->requested_packet > 0) {
-		entry->requested_packet--;
-		brcmf_skb_if_flags_set_field(skb, REQUESTED, 1);
-		if (entry->state == BRCMF_FWS_STATE_CLOSE)
-			use_credit = 0;
-	}
-	brcmf_skb_if_flags_set_field(skb, CREDITCHECK, use_credit);
-	if (!use_credit) {
-		brcmf_dbg(TRACE, "exit: no creditcheck set\n");
+	if (!brcmf_fws_macdesc_use_credit(entry, skb))
 		return 0;
-	}
 
 	if (fifo != BRCMF_FWS_FIFO_AC_BE)
 		fws->borrow_defer_timestamp = jiffies +
@@ -1752,13 +1721,13 @@ static int brcmf_fws_consume_credit(struct brcmf_fws_info *fws, int fifo,
 		    brcmf_fws_borrow_credit(fws) == 0)
 			return 0;
 
-		brcmf_dbg(TRACE, "exit: ac=%d, credits depleted\n", fifo);
+		brcmf_dbg(DATA, "exit: ac=%d, credits depleted\n", fifo);
 		return -ENAVAIL;
 	}
 	(*credit)--;
 	if (!(*credit))
 		fws->fifo_credit_map &= ~(1 << fifo);
-	brcmf_dbg(TRACE, "exit: ac=%d, credits=%d\n", fifo, *credit);
+	brcmf_dbg(DATA, "exit: ac=%d, credits=%d\n", fifo, *credit);
 	return 0;
 }
 
@@ -1769,6 +1738,7 @@ static int brcmf_fws_commit_skb(struct brcmf_fws_info *fws, int fifo,
 	struct brcmf_fws_mac_descriptor *entry;
 	struct brcmf_bus *bus = fws->drvr->bus_if;
 	int rc;
+	u8 ifidx;
 
 	entry = skcb->mac;
 	if (IS_ERR(entry))
@@ -1780,10 +1750,17 @@ static int brcmf_fws_commit_skb(struct brcmf_fws_info *fws, int fifo,
 		goto rollback;
 	}
 
+	brcmf_dbg(DATA, "%s flags %X htod %X\n", entry->name, skcb->if_flags,
+		  skcb->htod);
 	rc = brcmf_bus_txdata(bus, skb);
-	if (rc < 0)
+	if (rc < 0) {
+		brcmf_proto_hdrpull(fws->drvr, false, &ifidx, skb);
 		goto rollback;
+	}
 
+	entry->transit_count++;
+	if (entry->suppressed)
+		entry->suppr_transit_count++;
 	entry->seq[fifo]++;
 	fws->stats.pkt2bus++;
 	if (brcmf_skbcb(skb)->if_flags & BRCMF_SKB_IF_FLAGS_CREDITCHECK_MASK) {
@@ -1794,7 +1771,7 @@ static int brcmf_fws_commit_skb(struct brcmf_fws_info *fws, int fifo,
 	return rc;
 
 rollback:
-	brcmf_fws_rollback_toq(fws, skb);
+	brcmf_fws_rollback_toq(fws, skb, fifo);
 	return rc;
 }
 
@@ -1831,13 +1808,13 @@ int brcmf_fws_process_skb(struct brcmf_if *ifp, struct sk_buff *skb)
 	brcmf_skb_if_flags_set_field(skb, INDEX, ifp->ifidx);
 	if (!multicast)
 		fifo = brcmf_fws_prio2fifo[skb->priority];
-	brcmf_skb_if_flags_set_field(skb, FIFO, fifo);
 
-	brcmf_dbg(TRACE, "ea=%pM, multi=%d, fifo=%d\n", eh->h_dest,
-		  multicast, fifo);
+	brcmf_dbg(DATA, "%s mac %pM multi %d fifo %d\n", skcb->mac->name,
+		  eh->h_dest, multicast, fifo);
 
 	brcmf_fws_lock(drvr, flags);
 	if (skcb->mac->suppressed ||
+	    fws->bus_flow_blocked ||
 	    brcmf_fws_mac_desc_closed(fws, skcb->mac, fifo) ||
 	    brcmu_pktq_mlen(&skcb->mac->psq, 3 << (fifo * 2)) ||
 	    (!multicast &&
@@ -1846,9 +1823,7 @@ int brcmf_fws_process_skb(struct brcmf_if *ifp, struct sk_buff *skb)
 		drvr->fws->fifo_delay_map |= 1 << fifo;
 		brcmf_fws_enq(fws, BRCMF_FWS_SKBSTATE_DELAYED, fifo, skb);
 	} else {
-		if (brcmf_fws_commit_skb(fws, fifo, skb))
-			if (!multicast)
-				brcmf_skb_pick_up_credit(fws, fifo, skb);
+		brcmf_fws_commit_skb(fws, fifo, skb);
 	}
 	brcmf_fws_unlock(drvr, flags);
 	return 0;
@@ -1870,16 +1845,16 @@ void brcmf_fws_add_interface(struct brcmf_if *ifp)
 	struct brcmf_fws_info *fws = ifp->drvr->fws;
 	struct brcmf_fws_mac_descriptor *entry;
 
-	brcmf_dbg(TRACE, "enter: idx=%d, mac=%pM\n",
-		  ifp->bssidx, ifp->mac_addr);
 	if (!ifp->ndev || !ifp->drvr->fw_signals)
 		return;
 
 	entry = &fws->desc.iface[ifp->ifidx];
 	ifp->fws_desc = entry;
 	brcmf_fws_init_mac_descriptor(entry, ifp->mac_addr, ifp->ifidx);
+	brcmf_fws_macdesc_set_name(fws, entry);
 	brcmu_pktq_init(&entry->psq, BRCMF_FWS_PSQ_PREC_COUNT,
 			BRCMF_FWS_PSQ_LEN);
+	brcmf_dbg(TRACE, "added %s\n", entry->name);
 }
 
 void brcmf_fws_del_interface(struct brcmf_if *ifp)
@@ -1887,12 +1862,12 @@ void brcmf_fws_del_interface(struct brcmf_if *ifp)
 	struct brcmf_fws_mac_descriptor *entry = ifp->fws_desc;
 	ulong flags;
 
-	brcmf_dbg(TRACE, "enter: idx=%d\n", ifp->bssidx);
 	if (!entry)
 		return;
 
 	brcmf_fws_lock(ifp->drvr, flags);
 	ifp->fws_desc = NULL;
+	brcmf_dbg(TRACE, "deleting %s\n", entry->name);
 	brcmf_fws_clear_mac_descriptor(entry);
 	brcmf_fws_cleanup(ifp->drvr->fws, ifp->ifidx);
 	brcmf_fws_unlock(ifp->drvr, flags);
@@ -1904,39 +1879,39 @@ static void brcmf_fws_dequeue_worker(struct work_struct *worker)
 	struct sk_buff *skb;
 	ulong flags;
 	int fifo;
-	int credit;
 
 	fws = container_of(worker, struct brcmf_fws_info, fws_dequeue_work);
 
-	brcmf_dbg(TRACE, "enter: fws=%p\n", fws);
 	brcmf_fws_lock(fws->drvr, flags);
-	for (fifo = NL80211_NUM_ACS; fifo >= 0; fifo--) {
-		brcmf_dbg(TRACE, "fifo %d credit %d\n", fifo,
-			  fws->fifo_credit[fifo]);
-		for (credit = 0; credit < fws->fifo_credit[fifo]; /* nop */) {
+	for (fifo = NL80211_NUM_ACS; fifo >= 0 && !fws->bus_flow_blocked;
+	     fifo--) {
+		while (fws->fifo_credit[fifo]) {
 			skb = brcmf_fws_deq(fws, fifo);
-			if (!skb || brcmf_fws_commit_skb(fws, fifo, skb))
+			if (!skb)
 				break;
 			if (brcmf_skbcb(skb)->if_flags &
 			    BRCMF_SKB_IF_FLAGS_CREDITCHECK_MASK)
-				credit++;
+				fws->fifo_credit[fifo]--;
+
+			if (brcmf_fws_commit_skb(fws, fifo, skb))
+				break;
+			if (fws->bus_flow_blocked)
+				break;
 		}
 		if ((fifo == BRCMF_FWS_FIFO_AC_BE) &&
-		    (credit == fws->fifo_credit[fifo])) {
-			fws->fifo_credit[fifo] -= credit;
+		    (fws->fifo_credit[fifo] == 0) &&
+		    (!fws->bus_flow_blocked)) {
 			while (brcmf_fws_borrow_credit(fws) == 0) {
 				skb = brcmf_fws_deq(fws, fifo);
 				if (!skb) {
 					brcmf_fws_return_credits(fws, fifo, 1);
 					break;
 				}
-				if (brcmf_fws_commit_skb(fws, fifo, skb)) {
-					brcmf_fws_return_credits(fws, fifo, 1);
+				if (brcmf_fws_commit_skb(fws, fifo, skb))
 					break;
-				}
+				if (fws->bus_flow_blocked)
+					break;
 			}
-		} else {
-			fws->fifo_credit[fifo] -= credit;
 		}
 	}
 	brcmf_fws_unlock(fws->drvr, flags);
@@ -1994,14 +1969,14 @@ int brcmf_fws_init(struct brcmf_pub *drvr)
 
 	brcmf_fws_hanger_init(&drvr->fws->hanger);
 	brcmf_fws_init_mac_descriptor(&drvr->fws->desc.other, NULL, 0);
+	brcmf_fws_macdesc_set_name(drvr->fws, &drvr->fws->desc.other);
 	brcmu_pktq_init(&drvr->fws->desc.other.psq, BRCMF_FWS_PSQ_PREC_COUNT,
 			BRCMF_FWS_PSQ_LEN);
 
 	/* create debugfs file for statistics */
 	brcmf_debugfs_create_fws_stats(drvr, &drvr->fws->stats);
 
-	/* TODO: remove upon feature delivery */
-	brcmf_err("%s bdcv2 tlv signaling [%x]\n",
+	brcmf_dbg(INFO, "%s bdcv2 tlv signaling [%x]\n",
 		  drvr->fw_signals ? "enabled" : "disabled", tlv);
 	return 0;
 
@@ -2043,25 +2018,34 @@ bool brcmf_fws_fc_active(struct brcmf_fws_info *fws)
 	if (!fws)
 		return false;
 
-	brcmf_dbg(TRACE, "enter: mode=%d\n", fws->fcmode);
 	return fws->fcmode != BRCMF_FWS_FCMODE_NONE;
 }
 
 void brcmf_fws_bustxfail(struct brcmf_fws_info *fws, struct sk_buff *skb)
 {
 	ulong flags;
+	int fifo;
 
+	if (brcmf_skbcb(skb)->state == BRCMF_FWS_SKBSTATE_TIM) {
+		brcmu_pkt_buf_free_skb(skb);
+		return;
+	}
 	brcmf_fws_lock(fws->drvr, flags);
-	brcmf_fws_txstatus_process(fws, BRCMF_FWS_TXSTATUS_FW_TOSSED,
+	brcmf_fws_txs_process(fws, BRCMF_FWS_TXSTATUS_FW_TOSSED,
 				   brcmf_skb_htod_tag_get_field(skb, HSLOT), 0);
 	/* the packet never reached firmware so reclaim credit */
-	if (fws->fcmode == BRCMF_FWS_FCMODE_EXPLICIT_CREDIT &&
-	    brcmf_skbcb(skb)->if_flags & BRCMF_SKB_IF_FLAGS_CREDITCHECK_MASK) {
-		brcmf_fws_return_credits(fws,
-					 brcmf_skb_htod_tag_get_field(skb,
-								      FIFO),
-					 1);
-		brcmf_fws_schedule_deq(fws);
+	if (fws->fcmode == BRCMF_FWS_FCMODE_EXPLICIT_CREDIT) {
+		fifo = brcmf_skb_htod_tag_get_field(skb, FIFO);
+		brcmf_fws_skb_pickup_credit(fws, fifo, skb);
 	}
 	brcmf_fws_unlock(fws->drvr, flags);
+}
+
+void brcmf_fws_bus_blocked(struct brcmf_pub *drvr, bool flow_blocked)
+{
+	struct brcmf_fws_info *fws = drvr->fws;
+
+	fws->bus_flow_blocked = flow_blocked;
+	if (!flow_blocked)
+		brcmf_fws_schedule_deq(fws);
 }
