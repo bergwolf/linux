@@ -132,12 +132,10 @@ static inline int ext4_begin_ordered_truncate(struct inode *inode,
 						   new_size);
 }
 
-static void ext4_invalidatepage(struct page *page, unsigned long offset);
+static void ext4_invalidatepage(struct page *page, unsigned int offset,
+				unsigned int length);
 static int __ext4_journalled_writepage(struct page *page, unsigned int len);
 static int ext4_bh_delay_or_unwritten(handle_t *handle, struct buffer_head *bh);
-static int ext4_discard_partial_page_buffers_no_lock(handle_t *handle,
-		struct inode *inode, struct page *page, loff_t from,
-		loff_t length, int flags);
 
 /*
  * Test whether an inode is a fast symlink.
@@ -1415,20 +1413,27 @@ static void ext4_da_release_space(struct inode *inode, int to_free)
 }
 
 static void ext4_da_page_release_reservation(struct page *page,
-					     unsigned long offset)
+					     unsigned int offset,
+					     unsigned int length)
 {
 	int to_release = 0;
 	struct buffer_head *head, *bh;
 	unsigned int curr_off = 0;
 	struct inode *inode = page->mapping->host;
 	struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
+	unsigned int stop = offset + length;
 	int num_clusters;
 	ext4_fsblk_t lblk;
+
+	BUG_ON(stop > PAGE_CACHE_SIZE || stop < length);
 
 	head = page_buffers(page);
 	bh = head;
 	do {
 		unsigned int next_off = curr_off + bh->b_size;
+
+		if (next_off > stop)
+			break;
 
 		if ((offset <= curr_off) && (buffer_delay(bh))) {
 			to_release++;
@@ -1606,7 +1611,7 @@ static void ext4_da_block_invalidatepages(struct mpage_da_data *mpd)
 				break;
 			BUG_ON(!PageLocked(page));
 			BUG_ON(PageWriteback(page));
-			block_invalidatepage(page, 0);
+			block_invalidatepage(page, 0, PAGE_CACHE_SIZE);
 			ClearPageUptodate(page);
 			unlock_page(page);
 		}
@@ -2829,7 +2834,8 @@ static int ext4_da_write_end(struct file *file,
 	return ret ? ret : copied;
 }
 
-static void ext4_da_invalidatepage(struct page *page, unsigned long offset)
+static void ext4_da_invalidatepage(struct page *page, unsigned int offset,
+				   unsigned int length)
 {
 	/*
 	 * Drop reserved blocks
@@ -2838,10 +2844,10 @@ static void ext4_da_invalidatepage(struct page *page, unsigned long offset)
 	if (!page_has_buffers(page))
 		goto out;
 
-	ext4_da_page_release_reservation(page, offset);
+	ext4_da_page_release_reservation(page, offset, length);
 
 out:
-	ext4_invalidatepage(page, offset);
+	ext4_invalidatepage(page, offset, length);
 
 	return;
 }
@@ -2989,37 +2995,40 @@ ext4_readpages(struct file *file, struct address_space *mapping,
 	return mpage_readpages(mapping, pages, nr_pages, ext4_get_block);
 }
 
-static void ext4_invalidatepage(struct page *page, unsigned long offset)
+static void ext4_invalidatepage(struct page *page, unsigned int offset,
+				unsigned int length)
 {
-	trace_ext4_invalidatepage(page, offset);
+	trace_ext4_invalidatepage(page, offset, length);
 
 	/* No journalling happens on data buffers when this function is used */
 	WARN_ON(page_has_buffers(page) && buffer_jbd(page_buffers(page)));
 
-	block_invalidatepage(page, offset);
+	block_invalidatepage(page, offset, length);
 }
 
 static int __ext4_journalled_invalidatepage(struct page *page,
-					    unsigned long offset)
+					    unsigned int offset,
+					    unsigned int length)
 {
 	journal_t *journal = EXT4_JOURNAL(page->mapping->host);
 
-	trace_ext4_journalled_invalidatepage(page, offset);
+	trace_ext4_journalled_invalidatepage(page, offset, length);
 
 	/*
 	 * If it's a full truncate we just forget about the pending dirtying
 	 */
-	if (offset == 0)
+	if (offset == 0 && length == PAGE_CACHE_SIZE)
 		ClearPageChecked(page);
 
-	return jbd2_journal_invalidatepage(journal, page, offset);
+	return jbd2_journal_invalidatepage(journal, page, offset, length);
 }
 
 /* Wrapper for aops... */
 static void ext4_journalled_invalidatepage(struct page *page,
-					   unsigned long offset)
+					   unsigned int offset,
+					   unsigned int length)
 {
-	WARN_ON(__ext4_journalled_invalidatepage(page, offset) < 0);
+	WARN_ON(__ext4_journalled_invalidatepage(page, offset, length) < 0);
 }
 
 static int ext4_releasepage(struct page *page, gfp_t wait)
@@ -3355,20 +3364,42 @@ void ext4_set_aops(struct inode *inode)
 		inode->i_mapping->a_ops = &ext4_aops;
 }
 
+/*
+ * ext4_block_truncate_page() zeroes out a mapping from file offset `from'
+ * up to the end of the block which corresponds to `from'.
+ * This required during truncate. We need to physically zero the tail end
+ * of that block so it doesn't yield old data if the file is later grown.
+ */
+int ext4_block_truncate_page(handle_t *handle,
+		struct address_space *mapping, loff_t from)
+{
+	unsigned offset = from & (PAGE_CACHE_SIZE-1);
+	unsigned length;
+	unsigned blocksize;
+	struct inode *inode = mapping->host;
+
+	blocksize = inode->i_sb->s_blocksize;
+	length = blocksize - (offset & (blocksize - 1));
+
+	return ext4_block_zero_page_range(handle, mapping, from, length);
+}
 
 /*
- * ext4_discard_partial_page_buffers()
- * Wrapper function for ext4_discard_partial_page_buffers_no_lock.
- * This function finds and locks the page containing the offset
- * "from" and passes it to ext4_discard_partial_page_buffers_no_lock.
- * Calling functions that already have the page locked should call
- * ext4_discard_partial_page_buffers_no_lock directly.
+ * ext4_block_zero_page_range() zeros out a mapping of length 'length'
+ * starting from file offset 'from'.  The range to be zero'd must
+ * be contained with in one block.  If the specified range exceeds
+ * the end of the block it will be shortened to end of the block
+ * that cooresponds to 'from'
  */
-int ext4_discard_partial_page_buffers(handle_t *handle,
-		struct address_space *mapping, loff_t from,
-		loff_t length, int flags)
+int ext4_block_zero_page_range(handle_t *handle,
+		struct address_space *mapping, loff_t from, loff_t length)
 {
+	ext4_fsblk_t index = from >> PAGE_CACHE_SHIFT;
+	unsigned offset = from & (PAGE_CACHE_SIZE-1);
+	unsigned blocksize, max, pos;
+	ext4_lblk_t iblock;
 	struct inode *inode = mapping->host;
+	struct buffer_head *bh;
 	struct page *page;
 	int err = 0;
 
@@ -3377,67 +3408,12 @@ int ext4_discard_partial_page_buffers(handle_t *handle,
 	if (!page)
 		return -ENOMEM;
 
-	err = ext4_discard_partial_page_buffers_no_lock(handle, inode, page,
-		from, length, flags);
-
-	unlock_page(page);
-	page_cache_release(page);
-	return err;
-}
-
-/*
- * ext4_discard_partial_page_buffers_no_lock()
- * Zeros a page range of length 'length' starting from offset 'from'.
- * Buffer heads that correspond to the block aligned regions of the
- * zeroed range will be unmapped.  Unblock aligned regions
- * will have the corresponding buffer head mapped if needed so that
- * that region of the page can be updated with the partial zero out.
- *
- * This function assumes that the page has already been  locked.  The
- * The range to be discarded must be contained with in the given page.
- * If the specified range exceeds the end of the page it will be shortened
- * to the end of the page that corresponds to 'from'.  This function is
- * appropriate for updating a page and it buffer heads to be unmapped and
- * zeroed for blocks that have been either released, or are going to be
- * released.
- *
- * handle: The journal handle
- * inode:  The files inode
- * page:   A locked page that contains the offset "from"
- * from:   The starting byte offset (from the beginning of the file)
- *         to begin discarding
- * len:    The length of bytes to discard
- * flags:  Optional flags that may be used:
- *
- *         EXT4_DISCARD_PARTIAL_PG_ZERO_UNMAPPED
- *         Only zero the regions of the page whose buffer heads
- *         have already been unmapped.  This flag is appropriate
- *         for updating the contents of a page whose blocks may
- *         have already been released, and we only want to zero
- *         out the regions that correspond to those released blocks.
- *
- * Returns zero on success or negative on failure.
- */
-static int ext4_discard_partial_page_buffers_no_lock(handle_t *handle,
-		struct inode *inode, struct page *page, loff_t from,
-		loff_t length, int flags)
-{
-	ext4_fsblk_t index = from >> PAGE_CACHE_SHIFT;
-	unsigned int offset = from & (PAGE_CACHE_SIZE-1);
-	unsigned int blocksize, max, pos;
-	ext4_lblk_t iblock;
-	struct buffer_head *bh;
-	int err = 0;
-
 	blocksize = inode->i_sb->s_blocksize;
-	max = PAGE_CACHE_SIZE - offset;
-
-	if (index != page->index)
-		return -EINVAL;
+	max = blocksize - (offset & (blocksize - 1));
 
 	/*
 	 * correct length if it does not fall between
-	 * 'from' and the end of the page
+	 * 'from' and the end of the block
 	 */
 	if (length > max || length < 0)
 		length = max;
@@ -3456,105 +3432,93 @@ static int ext4_discard_partial_page_buffers_no_lock(handle_t *handle,
 		pos += blocksize;
 	}
 
-	pos = offset;
-	while (pos < offset + length) {
-		unsigned int end_of_block, range_to_discard;
-
-		err = 0;
-
-		/* The length of space left to zero and unmap */
-		range_to_discard = offset + length - pos;
-
-		/* The length of space until the end of the block */
-		end_of_block = blocksize - (pos & (blocksize-1));
-
-		/*
-		 * Do not unmap or zero past end of block
-		 * for this buffer head
-		 */
-		if (range_to_discard > end_of_block)
-			range_to_discard = end_of_block;
-
-
-		/*
-		 * Skip this buffer head if we are only zeroing unampped
-		 * regions of the page
-		 */
-		if (flags & EXT4_DISCARD_PARTIAL_PG_ZERO_UNMAPPED &&
-			buffer_mapped(bh))
-				goto next;
-
-		/* If the range is block aligned, unmap */
-		if (range_to_discard == blocksize) {
-			clear_buffer_dirty(bh);
-			bh->b_bdev = NULL;
-			clear_buffer_mapped(bh);
-			clear_buffer_req(bh);
-			clear_buffer_new(bh);
-			clear_buffer_delay(bh);
-			clear_buffer_unwritten(bh);
-			clear_buffer_uptodate(bh);
-			zero_user(page, pos, range_to_discard);
-			BUFFER_TRACE(bh, "Buffer discarded");
-			goto next;
-		}
-
-		/*
-		 * If this block is not completely contained in the range
-		 * to be discarded, then it is not going to be released. Because
-		 * we need to keep this block, we need to make sure this part
-		 * of the page is uptodate before we modify it by writeing
-		 * partial zeros on it.
-		 */
-		if (!buffer_mapped(bh)) {
-			/*
-			 * Buffer head must be mapped before we can read
-			 * from the block
-			 */
-			BUFFER_TRACE(bh, "unmapped");
-			ext4_get_block(inode, iblock, bh, 0);
-			/* unmapped? It's a hole - nothing to do */
-			if (!buffer_mapped(bh)) {
-				BUFFER_TRACE(bh, "still unmapped");
-				goto next;
-			}
-		}
-
-		/* Ok, it's mapped. Make sure it's up-to-date */
-		if (PageUptodate(page))
-			set_buffer_uptodate(bh);
-
-		if (!buffer_uptodate(bh)) {
-			err = -EIO;
-			ll_rw_block(READ, 1, &bh);
-			wait_on_buffer(bh);
-			/* Uhhuh. Read error. Complain and punt.*/
-			if (!buffer_uptodate(bh))
-				goto next;
-		}
-
-		if (ext4_should_journal_data(inode)) {
-			BUFFER_TRACE(bh, "get write access");
-			err = ext4_journal_get_write_access(handle, bh);
-			if (err)
-				goto next;
-		}
-
-		zero_user(page, pos, range_to_discard);
-
-		err = 0;
-		if (ext4_should_journal_data(inode)) {
-			err = ext4_handle_dirty_metadata(handle, inode, bh);
-		} else
-			mark_buffer_dirty(bh);
-
-		BUFFER_TRACE(bh, "Partial buffer zeroed");
-next:
-		bh = bh->b_this_page;
-		iblock++;
-		pos += range_to_discard;
+	err = 0;
+	if (buffer_freed(bh)) {
+		BUFFER_TRACE(bh, "freed: skip");
+		goto unlock;
 	}
 
+	if (!buffer_mapped(bh)) {
+		BUFFER_TRACE(bh, "unmapped");
+		ext4_get_block(inode, iblock, bh, 0);
+		/* unmapped? It's a hole - nothing to do */
+		if (!buffer_mapped(bh)) {
+			BUFFER_TRACE(bh, "still unmapped");
+			goto unlock;
+		}
+	}
+
+	/* Ok, it's mapped. Make sure it's up-to-date */
+	if (PageUptodate(page))
+		set_buffer_uptodate(bh);
+
+	if (!buffer_uptodate(bh)) {
+		err = -EIO;
+		ll_rw_block(READ, 1, &bh);
+		wait_on_buffer(bh);
+		/* Uhhuh. Read error. Complain and punt. */
+		if (!buffer_uptodate(bh))
+			goto unlock;
+	}
+
+	if (ext4_should_journal_data(inode)) {
+		BUFFER_TRACE(bh, "get write access");
+		err = ext4_journal_get_write_access(handle, bh);
+		if (err)
+			goto unlock;
+	}
+
+	zero_user(page, offset, length);
+
+	BUFFER_TRACE(bh, "zeroed end of block");
+
+	err = 0;
+	if (ext4_should_journal_data(inode)) {
+		err = ext4_handle_dirty_metadata(handle, inode, bh);
+	} else {
+		mark_buffer_dirty(bh);
+		if (ext4_test_inode_state(inode, EXT4_STATE_ORDERED_MODE))
+			err = ext4_jbd2_file_inode(handle, inode);
+	}
+
+unlock:
+	unlock_page(page);
+	page_cache_release(page);
+	return err;
+}
+
+int ext4_zero_partial_blocks(handle_t *handle, struct inode *inode,
+			     loff_t lstart, loff_t length)
+{
+	struct super_block *sb = inode->i_sb;
+	struct address_space *mapping = inode->i_mapping;
+	unsigned partial = lstart & (sb->s_blocksize - 1);
+	ext4_fsblk_t start, end;
+	loff_t byte_end = (lstart + length - 1);
+	int err = 0;
+
+	start = lstart >> sb->s_blocksize_bits;
+	end = byte_end >> sb->s_blocksize_bits;
+
+	/* Handle partial zero within the single block */
+	if (start == end) {
+		err = ext4_block_zero_page_range(handle, mapping,
+						 lstart, length);
+		return err;
+	}
+	/* Handle partial zero out on the start of the range */
+	if (partial) {
+		err = ext4_block_zero_page_range(handle, mapping,
+						 lstart, sb->s_blocksize);
+		if (err)
+			return err;
+	}
+	/* Handle partial zero out on the end of the range */
+	partial = byte_end & (sb->s_blocksize - 1);
+	if (partial != sb->s_blocksize - 1)
+		err = ext4_block_zero_page_range(handle, mapping,
+						 byte_end - partial,
+						 partial + 1);
 	return err;
 }
 
@@ -3586,19 +3550,13 @@ int ext4_punch_hole(struct file *file, loff_t offset, loff_t length)
 	struct super_block *sb = inode->i_sb;
 	ext4_lblk_t first_block, stop_block;
 	struct address_space *mapping = inode->i_mapping;
-	loff_t first_page, last_page, page_len;
-	loff_t first_page_offset, last_page_offset;
+	loff_t first_block_offset, last_block_offset;
 	handle_t *handle;
 	unsigned int credits;
 	int ret = 0;
 
 	if (!S_ISREG(inode->i_mode))
 		return -EOPNOTSUPP;
-
-	if (EXT4_SB(sb)->s_cluster_ratio > 1) {
-		/* TODO: Add support for bigalloc file systems */
-		return -EOPNOTSUPP;
-	}
 
 	trace_ext4_punch_hole(inode, offset, length);
 
@@ -3638,17 +3596,13 @@ int ext4_punch_hole(struct file *file, loff_t offset, loff_t length)
 		   offset;
 	}
 
-	first_page = (offset + PAGE_CACHE_SIZE - 1) >> PAGE_CACHE_SHIFT;
-	last_page = (offset + length) >> PAGE_CACHE_SHIFT;
+	first_block_offset = round_up(offset, sb->s_blocksize);
+	last_block_offset = round_down((offset + length), sb->s_blocksize) - 1;
 
-	first_page_offset = first_page << PAGE_CACHE_SHIFT;
-	last_page_offset = last_page << PAGE_CACHE_SHIFT;
-
-	/* Now release the pages */
-	if (last_page_offset > first_page_offset) {
-		truncate_pagecache_range(inode, first_page_offset,
-					 last_page_offset - 1);
-	}
+	/* Now release the pages and zero block aligned part of pages*/
+	if (last_block_offset > first_block_offset)
+		truncate_pagecache_range(inode, first_block_offset,
+					 last_block_offset);
 
 	/* Wait all existing dio workers, newcomers will block on i_mutex */
 	ext4_inode_block_unlocked_dio(inode);
@@ -3668,66 +3622,10 @@ int ext4_punch_hole(struct file *file, loff_t offset, loff_t length)
 		goto out_dio;
 	}
 
-	/*
-	 * Now we need to zero out the non-page-aligned data in the
-	 * pages at the start and tail of the hole, and unmap the
-	 * buffer heads for the block aligned regions of the page that
-	 * were completely zeroed.
-	 */
-	if (first_page > last_page) {
-		/*
-		 * If the file space being truncated is contained
-		 * within a page just zero out and unmap the middle of
-		 * that page
-		 */
-		ret = ext4_discard_partial_page_buffers(handle,
-			mapping, offset, length, 0);
-
-		if (ret)
-			goto out_stop;
-	} else {
-		/*
-		 * zero out and unmap the partial page that contains
-		 * the start of the hole
-		 */
-		page_len = first_page_offset - offset;
-		if (page_len > 0) {
-			ret = ext4_discard_partial_page_buffers(handle, mapping,
-						offset, page_len, 0);
-			if (ret)
-				goto out_stop;
-		}
-
-		/*
-		 * zero out and unmap the partial page that contains
-		 * the end of the hole
-		 */
-		page_len = offset + length - last_page_offset;
-		if (page_len > 0) {
-			ret = ext4_discard_partial_page_buffers(handle, mapping,
-					last_page_offset, page_len, 0);
-			if (ret)
-				goto out_stop;
-		}
-	}
-
-	/*
-	 * If i_size is contained in the last page, we need to
-	 * unmap and zero the partial page after i_size
-	 */
-	if (inode->i_size >> PAGE_CACHE_SHIFT == last_page &&
-	   inode->i_size % PAGE_CACHE_SIZE != 0) {
-		page_len = PAGE_CACHE_SIZE -
-			(inode->i_size & (PAGE_CACHE_SIZE - 1));
-
-		if (page_len > 0) {
-			ret = ext4_discard_partial_page_buffers(handle,
-					mapping, inode->i_size, page_len, 0);
-
-			if (ret)
-				goto out_stop;
-		}
-	}
+	ret = ext4_zero_partial_blocks(handle, inode, offset,
+				       length);
+	if (ret)
+		goto out_stop;
 
 	first_block = (offset + sb->s_blocksize - 1) >>
 		EXT4_BLOCK_SIZE_BITS(sb);
@@ -3803,7 +3701,6 @@ void ext4_truncate(struct inode *inode)
 	unsigned int credits;
 	handle_t *handle;
 	struct address_space *mapping = inode->i_mapping;
-	loff_t page_len;
 
 	/*
 	 * There is a possibility that we're either freeing the inode
@@ -3847,14 +3744,8 @@ void ext4_truncate(struct inode *inode)
 		return;
 	}
 
-	if (inode->i_size % PAGE_CACHE_SIZE != 0) {
-		page_len = PAGE_CACHE_SIZE -
-			(inode->i_size & (PAGE_CACHE_SIZE - 1));
-
-		if (ext4_discard_partial_page_buffers(handle,
-				mapping, inode->i_size, page_len, 0))
-			goto out_stop;
-	}
+	if (inode->i_size & (inode->i_sb->s_blocksize - 1))
+		ext4_block_truncate_page(handle, mapping, inode->i_size);
 
 	/*
 	 * We add the inode to the orphan list, so that if this
@@ -4623,7 +4514,8 @@ static void ext4_wait_for_tail_page_commit(struct inode *inode)
 				      inode->i_size >> PAGE_CACHE_SHIFT);
 		if (!page)
 			return;
-		ret = __ext4_journalled_invalidatepage(page, offset);
+		ret = __ext4_journalled_invalidatepage(page, offset,
+						PAGE_CACHE_SIZE - offset);
 		unlock_page(page);
 		page_cache_release(page);
 		if (ret != -EBUSY)
