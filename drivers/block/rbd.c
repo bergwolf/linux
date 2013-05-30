@@ -519,8 +519,8 @@ static const struct block_device_operations rbd_bd_ops = {
 };
 
 /*
- * Initialize an rbd client instance.
- * We own *ceph_opts.
+ * Initialize an rbd client instance.  Success or not, this function
+ * consumes ceph_opts.
  */
 static struct rbd_client *rbd_client_create(struct ceph_options *ceph_opts)
 {
@@ -675,7 +675,8 @@ static int parse_rbd_opts_token(char *c, void *private)
 
 /*
  * Get a ceph client with specific addr and configuration, if one does
- * not exist create it.
+ * not exist create it.  Either way, ceph_opts is consumed by this
+ * function.
  */
 static struct rbd_client *rbd_get_client(struct ceph_options *ceph_opts)
 {
@@ -1121,6 +1122,7 @@ static void zero_bio_chain(struct bio *chain, int start_ofs)
 				buf = bvec_kmap_irq(bv, &flags);
 				memset(buf + remainder, 0,
 				       bv->bv_len - remainder);
+				flush_dcache_page(bv->bv_page);
 				bvec_kunmap_irq(buf, &flags);
 			}
 			pos += bv->bv_len;
@@ -1148,11 +1150,12 @@ static void zero_pages(struct page **pages, u64 offset, u64 end)
 		unsigned long flags;
 		void *kaddr;
 
-		page_offset = (size_t)(offset & ~PAGE_MASK);
-		length = min(PAGE_SIZE - page_offset, (size_t)(end - offset));
+		page_offset = offset & ~PAGE_MASK;
+		length = min_t(size_t, PAGE_SIZE - page_offset, end - offset);
 		local_irq_save(flags);
 		kaddr = kmap_atomic(*page);
 		memset(kaddr + page_offset, 0, length);
+		flush_dcache_page(*page);
 		kunmap_atomic(kaddr);
 		local_irq_restore(flags);
 
@@ -1678,14 +1681,17 @@ static void rbd_osd_req_callback(struct ceph_osd_request *osd_req,
 		rbd_osd_read_callback(obj_request);
 		break;
 	case CEPH_OSD_OP_WRITE:
+		rbd_assert(!msg);
 		rbd_osd_write_callback(obj_request);
 		break;
 	case CEPH_OSD_OP_STAT:
 		rbd_osd_stat_callback(obj_request);
 		break;
+	case CEPH_OSD_OP_WATCH:
+		rbd_assert(!msg);
+		/* fall through */
 	case CEPH_OSD_OP_CALL:
 	case CEPH_OSD_OP_NOTIFY_ACK:
-	case CEPH_OSD_OP_WATCH:
 		rbd_osd_trivial_callback(obj_request);
 		break;
 	default:
@@ -1696,6 +1702,24 @@ static void rbd_osd_req_callback(struct ceph_osd_request *osd_req,
 
 	if (obj_request_done_test(obj_request))
 		rbd_obj_request_complete(obj_request);
+}
+
+/*
+ * This is called twice:  once (with unsafe == true) when the
+ * request message is first handed to the messenger for delivery;
+ * and the second time (with unsafe == false) after we get
+ * confirmation the change is durable on the osd.  We ignore the
+ * first, and let the "normal" callback routine handle the second.
+ */
+static void rbd_osd_req_unsafe_callback(struct ceph_osd_request *osd_req,
+				bool unsafe)
+{
+	dout("%s: osd_req %p unsafe %s op 0x%hx\n", __func__, osd_req,
+		unsafe ? "true" : "false", osd_req->r_ops[0].op);
+
+	rbd_assert(osd_req->r_flags & CEPH_OSD_FLAG_WRITE);
+	if (!unsafe)
+		rbd_osd_req_callback(osd_req, NULL);
 }
 
 static void rbd_osd_req_format_read(struct rbd_obj_request *obj_request)
@@ -1750,12 +1774,13 @@ static struct ceph_osd_request *rbd_osd_req_create(
 	if (!osd_req)
 		return NULL;	/* ENOMEM */
 
-	if (write_request)
+	if (write_request) {
 		osd_req->r_flags = CEPH_OSD_FLAG_WRITE | CEPH_OSD_FLAG_ONDISK;
-	else
+		osd_req->r_unsafe_callback = rbd_osd_req_unsafe_callback;
+	} else {
 		osd_req->r_flags = CEPH_OSD_FLAG_READ;
-
-	osd_req->r_callback = rbd_osd_req_callback;
+		osd_req->r_callback = rbd_osd_req_callback;
+	}
 	osd_req->r_priv = obj_request;
 
 	osd_req->r_oid_len = strlen(obj_request->object_name);
@@ -2526,6 +2551,7 @@ static void rbd_img_obj_exists_callback(struct rbd_obj_request *obj_request)
 	 */
 	orig_request = obj_request->obj_request;
 	obj_request->obj_request = NULL;
+	rbd_obj_request_put(orig_request);
 	rbd_assert(orig_request);
 	rbd_assert(orig_request->img_request);
 
@@ -2546,7 +2572,6 @@ static void rbd_img_obj_exists_callback(struct rbd_obj_request *obj_request)
 	if (!rbd_dev->parent_overlap) {
 		struct ceph_osd_client *osdc;
 
-		rbd_obj_request_put(orig_request);
 		osdc = &rbd_dev->rbd_client->client->osdc;
 		result = rbd_obj_request_submit(osdc, orig_request);
 		if (!result)
@@ -2576,7 +2601,6 @@ static void rbd_img_obj_exists_callback(struct rbd_obj_request *obj_request)
 out:
 	if (orig_request->result)
 		rbd_obj_request_complete(orig_request);
-	rbd_obj_request_put(orig_request);
 }
 
 static int rbd_img_obj_exists_submit(struct rbd_obj_request *obj_request)
@@ -4697,8 +4721,10 @@ out:
 	return ret;
 }
 
-/* Undo whatever state changes are made by v1 or v2 image probe */
-
+/*
+ * Undo whatever state changes are made by v1 or v2 header info
+ * call.
+ */
 static void rbd_dev_unprobe(struct rbd_device *rbd_dev)
 {
 	struct rbd_image_header	*header;
@@ -4902,9 +4928,10 @@ static int rbd_dev_image_probe(struct rbd_device *rbd_dev, bool mapping)
 	int tmp;
 
 	/*
-	 * Get the id from the image id object.  If it's not a
-	 * format 2 image, we'll get ENOENT back, and we'll assume
-	 * it's a format 1 image.
+	 * Get the id from the image id object.  Unless there's an
+	 * error, rbd_dev->spec->image_id will be filled in with
+	 * a dynamically-allocated string, and rbd_dev->image_format
+	 * will be set to either 1 or 2.
 	 */
 	ret = rbd_dev_image_id(rbd_dev);
 	if (ret)
@@ -4992,7 +5019,6 @@ static ssize_t rbd_add(struct bus_type *bus,
 		rc = PTR_ERR(rbdc);
 		goto err_out_args;
 	}
-	ceph_opts = NULL;	/* rbd_dev client now owns this */
 
 	/* pick the pool */
 	osdc = &rbdc->client->osdc;
@@ -5027,18 +5053,18 @@ static ssize_t rbd_add(struct bus_type *bus,
 	rbd_dev->mapping.read_only = read_only;
 
 	rc = rbd_dev_device_setup(rbd_dev);
-	if (!rc)
-		return count;
+	if (rc) {
+		rbd_dev_image_release(rbd_dev);
+		goto err_out_module;
+	}
 
-	rbd_dev_image_release(rbd_dev);
+	return count;
+
 err_out_rbd_dev:
 	rbd_dev_destroy(rbd_dev);
 err_out_client:
 	rbd_put_client(rbdc);
 err_out_args:
-	if (ceph_opts)
-		ceph_destroy_options(ceph_opts);
-	kfree(rbd_opts);
 	rbd_spec_put(spec);
 err_out_module:
 	module_put(THIS_MODULE);
