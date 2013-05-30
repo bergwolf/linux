@@ -53,8 +53,6 @@
 #include <linux/memcontrol.h>
 #include <linux/mm_inline.h>
 
-#define page_index(p)       ((p)->index)
-
 #define memory_pressure_get() (current->flags & PF_MEMALLOC)
 #define memory_pressure_set() do { current->flags |= PF_MEMALLOC; } while (0)
 #define memory_pressure_clr() do { current->flags &= ~PF_MEMALLOC; } while (0)
