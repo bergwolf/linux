@@ -1,0 +1,24 @@
+for-next contents for 3.11: 
+Format is a little different from before in an attempt to make it easier to read:
+
+<next/* branch>
+	<topic branch>
+		<contents>
+		<...>
+	<...>
+
+next/cleanup
+	at91/cleanup
+		git://github.com/at91linux/linux-at91.git tags/at91-cleanup
+next/dt
+	nomadik/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-nomadik.git tags/nomadik-dt-for-arm-soc
+next/drivers
+	ux500/dma40
+		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-stericsson.git tags/ux500-dma40-for-arm-soc
+
+next/mailbox:
+	mailbox/subsystem
+		git://github.com/sumananna/mailbox.git dbx500-prcmu-mailbox
+
+
