@@ -3764,7 +3764,6 @@ static int azx_probe(struct pci_dev *pci,
 
 out_free:
 	snd_card_free(card);
-	pci_set_drvdata(pci, NULL);
 	return err;
 }
 
@@ -3834,7 +3833,6 @@ static void azx_remove(struct pci_dev *pci)
 
 	if (card)
 		snd_card_free(card);
-	pci_set_drvdata(pci, NULL);
 }
 
 /* PCI IDs */
@@ -3878,6 +3876,9 @@ static DEFINE_PCI_DEVICE_TABLE(azx_ids) = {
 	/* Oaktrail */
 	{ PCI_DEVICE(0x8086, 0x080a),
 	  .driver_data = AZX_DRIVER_SCH | AZX_DCAPS_INTEL_PCH_NOPM },
+	/* BayTrail */
+	{ PCI_DEVICE(0x8086, 0x0f04),
+	  .driver_data = AZX_DRIVER_PCH | AZX_DCAPS_INTEL_PCH_NOPM },
 	/* ICH */
 	{ PCI_DEVICE(0x8086, 0x2668),
 	  .driver_data = AZX_DRIVER_ICH | AZX_DCAPS_OLD_SSYNC |
