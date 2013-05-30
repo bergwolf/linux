@@ -1257,6 +1257,7 @@ void cl_inode_fini(struct inode *inode)
 	}
 }
 
+#define IFTODT(type)	(((type) & S_IFMT) >> 12)
 /**
  * return IF_* type for given lu_dirent entry.
  * IF_* flag shld be converted to particular OS file type in
