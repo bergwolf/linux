@@ -61,11 +61,7 @@ struct kmem_cache *ll_file_data_slab;
 LIST_HEAD(ll_super_blocks);
 DEFINE_SPINLOCK(ll_sb_lock);
 
-#ifndef MS_HAS_NEW_AOPS
 extern struct address_space_operations ll_aops;
-#else
-extern struct address_space_operations_ext ll_aops;
-#endif
 
 #ifndef log2
 #define log2(n) ffz(~(n))
@@ -241,9 +237,6 @@ static int client_common_fill_super(struct super_block *sb, char *md, char *dt,
 #ifdef HAVE_MS_FLOCK_LOCK
 	/* force vfs to use lustre handler for flock() calls - bug 10743 */
 	sb->s_flags |= MS_FLOCK_LOCK;
-#endif
-#ifdef MS_HAS_NEW_AOPS
-	sb->s_flags |= MS_HAS_NEW_AOPS;
 #endif
 
 	if (sbi->ll_flags & LL_SBI_FLOCK)
