@@ -1320,7 +1320,7 @@ static int cl_echo_object_brw(struct echo_object *eco, int rw, obd_off offset,
 	int i;
 	ENTRY;
 
-	LASSERT((offset & ~CFS_PAGE_MASK) == 0);
+	LASSERT((offset & ~PAGE_CACHE_MASK) == 0);
 	LASSERT(ed->ed_next != NULL);
 	env = cl_env_get(&refcheck);
 	if (IS_ERR(env))
@@ -1437,7 +1437,7 @@ echo_copyin_lsm (struct echo_device *ed, struct lov_stripe_md *lsm,
 
 	if (lsm->lsm_stripe_count > ec->ec_nstripes ||
 	    lsm->lsm_magic != LOV_MAGIC ||
-	    (lsm->lsm_stripe_size & (~CFS_PAGE_MASK)) != 0 ||
+	    (lsm->lsm_stripe_size & (~PAGE_CACHE_MASK)) != 0 ||
 	    ((__u64)lsm->lsm_stripe_size * lsm->lsm_stripe_count > ~0UL))
 		return (-EINVAL);
 
@@ -2489,7 +2489,7 @@ static int echo_client_kbrw(struct echo_device *ed, int rw, struct obdo *oa,
 	LASSERT(ostid_id(&lsm->lsm_oi) == ostid_id(&oa->o_oi));
 
 	if (count <= 0 ||
-	    (count & (~CFS_PAGE_MASK)) != 0)
+	    (count & (~PAGE_CACHE_MASK)) != 0)
 		RETURN(-EINVAL);
 
 	/* XXX think again with misaligned I/O */
@@ -2574,7 +2574,7 @@ static int echo_client_prep_commit(const struct lu_env *env,
 
 	ENTRY;
 
-	if (count <= 0 || (count & (~CFS_PAGE_MASK)) != 0 ||
+	if (count <= 0 || (count & (~PAGE_CACHE_MASK)) != 0 ||
 	    (lsm != NULL && ostid_id(&lsm->lsm_oi) != ostid_id(&oa->o_oi)))
 		RETURN(-EINVAL);
 
@@ -2739,8 +2739,8 @@ echo_client_enqueue(struct obd_export *exp, struct obdo *oa,
 	if (!(mode == LCK_PR || mode == LCK_PW))
 		RETURN(-EINVAL);
 
-	if ((offset & (~CFS_PAGE_MASK)) != 0 ||
-	    (nob & (~CFS_PAGE_MASK)) != 0)
+	if ((offset & (~PAGE_CACHE_MASK)) != 0 ||
+	    (nob & (~PAGE_CACHE_MASK)) != 0)
 		RETURN(-EINVAL);
 
 	rc = echo_get_object (&eco, ed, oa);

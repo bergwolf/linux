@@ -318,7 +318,16 @@ static inline int ll_quota_off(struct super_block *sb, int off, int remount)
 # define TIMES_SET_FLAGS (ATTR_MTIME_SET | ATTR_ATIME_SET)
 #endif
 
+#define IFTODT(type)	(((type) & S_IFMT) >> 12)
 
+#define flock_type(fl)			((fl)->fl_type)
+#define flock_set_type(fl, type)	(fl)->fl_type = (type)
+#define flock_pid(fl)			((fl)->fl_pid)
+#define flock_set_pid(fl, pid)		(fl)->fl_pid = (pid)
+#define flock_start(fl)			((fl)->fl_start)
+#define flock_set_start(fl, st)		(fl)->fl_start = (st)
+#define flock_end(fl)			((fl)->fl_end)
+#define flock_set_end(fl, end)		(fl)->fl_end = (end)
 
 /*
  * After 3.1, kernel's nameidata.intent.open.flags is different

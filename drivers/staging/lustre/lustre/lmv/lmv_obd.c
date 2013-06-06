@@ -1968,7 +1968,7 @@ static void lmv_adjust_dirpages(struct page **pages, int ncfspgs, int nlupgs)
 			dp = (struct lu_dirpage *)((char *)dp + LU_PAGE_SIZE);
 
 			/* Check if we've reached the end of the CFS_PAGE. */
-			if (!((unsigned long)dp & ~CFS_PAGE_MASK))
+			if (!((unsigned long)dp & ~PAGE_CACHE_MASK))
 				break;
 
 			/* Save the hash and flags of this lu_dirpage. */
