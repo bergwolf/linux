@@ -2749,5 +2749,5 @@ MODULE_AUTHOR("Sun Microsystems, Inc. <http://www.lustre.org/>");
 MODULE_DESCRIPTION("Lustre Metadata Client");
 MODULE_LICENSE("GPL");
 
-module_init(mdc_init);
+late_initcall(mdc_init);
 module_exit(mdc_exit);

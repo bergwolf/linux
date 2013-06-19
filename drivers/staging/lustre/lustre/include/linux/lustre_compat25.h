@@ -74,17 +74,6 @@ static inline void ll_set_fs_pwd(struct fs_struct *fs, struct vfsmount *mnt,
 #define current_ngroups current_cred()->group_info->ngroups
 #define current_groups current_cred()->group_info->small_block
 
-/*
- * OBD need working random driver, thus all our
- * initialization routines must be called after device
- * driver initialization
- */
-#ifndef MODULE
-#undef module_init
-#define module_init(a)     late_initcall(a)
-#endif
-
-
 #define LTIME_S(time)		   (time.tv_sec)
 
 #define ll_permission(inode,mask,nd)    inode_permission(inode,mask)

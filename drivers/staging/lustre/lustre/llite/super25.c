@@ -222,5 +222,5 @@ MODULE_AUTHOR("Sun Microsystems, Inc. <http://www.lustre.org/>");
 MODULE_DESCRIPTION("Lustre Lite Client File System");
 MODULE_LICENSE("GPL");
 
-module_init(init_lustre_lite);
+late_initcall(init_lustre_lite);
 module_exit(exit_lustre_lite);

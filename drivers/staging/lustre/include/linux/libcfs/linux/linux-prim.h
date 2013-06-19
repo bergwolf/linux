@@ -150,8 +150,8 @@ typedef struct task_struct	      task_t;
 	} while(0)
 
 /* Module interfaces */
-#define cfs_module(name, version, init, fini) \
-	module_init(init);		    \
+#define cfs_module(name, version, init, fini)	\
+	late_initcall(init);			\
 	module_exit(fini)
 
 /*

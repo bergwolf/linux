@@ -2723,5 +2723,5 @@ MODULE_AUTHOR("Sun Microsystems, Inc. <http://www.lustre.org/>");
 MODULE_DESCRIPTION("Lustre Logical Metadata Volume OBD driver");
 MODULE_LICENSE("GPL");
 
-module_init(lmv_init);
+late_initcall(lmv_init);
 module_exit(lmv_exit);
