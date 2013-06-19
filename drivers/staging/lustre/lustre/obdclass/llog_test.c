@@ -1083,5 +1083,5 @@ MODULE_AUTHOR("Sun Microsystems, Inc. <http://www.lustre.org/>");
 MODULE_DESCRIPTION("llog test module");
 MODULE_LICENSE("GPL");
 
-module_init(llog_test_init);
+late_initcall(llog_test_init);
 module_exit(llog_test_exit);

@@ -3255,5 +3255,5 @@ MODULE_AUTHOR("Sun Microsystems, Inc. <http://www.lustre.org/>");
 MODULE_DESCRIPTION("Kernel OpenIB gen2 LND v2.00");
 MODULE_LICENSE("GPL");
 
-module_init(kiblnd_module_init);
+late_initcall(kiblnd_module_init);
 module_exit(kiblnd_module_fini);

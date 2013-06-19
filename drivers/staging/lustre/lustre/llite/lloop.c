@@ -858,7 +858,7 @@ static void lloop_exit(void)
 	OBD_FREE(loop_dev, max_loop * sizeof(*loop_dev));
 }
 
-module_init(lloop_init);
+late_initcall(lloop_init);
 module_exit(lloop_exit);
 
 CFS_MODULE_PARM(max_loop, "i", int, 0444, "maximum of lloop_device");

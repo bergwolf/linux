@@ -753,7 +753,7 @@ static void __exit fsfilt_ext3_exit(void)
 	LASSERTF(rc == 0, "couldn't destroy fcb_cache slab\n");
 }
 
-module_init(fsfilt_ext3_init);
+late_initcall(fsfilt_ext3_init);
 module_exit(fsfilt_ext3_exit);
 
 MODULE_AUTHOR("Sun Microsystems, Inc. <http://www.lustre.org/>");
