@@ -2674,7 +2674,7 @@ static int lov_extent_calc(struct obd_export *exp, struct lov_stripe_md *lsm,
 			   int cmd, __u64 *offset)
 {
 	__u32 ssize = lsm->lsm_stripe_size;
-	__u64 start;
+	uint64_t start;
 
 	start = *offset;
 	lov_do_div64(start, ssize);
