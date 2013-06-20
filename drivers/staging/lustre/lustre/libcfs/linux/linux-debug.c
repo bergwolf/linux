@@ -179,10 +179,9 @@ void lbug_with_loc(struct libcfs_debug_msg_data *msgdata)
 		schedule();
 }
 
-
+#ifdef CONFIG_X86
 #include <linux/nmi.h>
 #include <asm/stacktrace.h>
-
 
 static int print_trace_stack(void *data, char *name)
 {
@@ -190,17 +189,15 @@ static int print_trace_stack(void *data, char *name)
 	return 0;
 }
 
-# define RELIABLE reliable
-# define DUMP_TRACE_CONST const
 static void print_trace_address(void *data, unsigned long addr, int reliable)
 {
 	char fmt[32];
 	touch_nmi_watchdog();
-	sprintf(fmt, " [<%016lx>] %s%%s\n", addr, RELIABLE ? "": "? ");
+	sprintf(fmt, " [<%016lx>] %s%%s\n", addr, reliable ? "": "? ");
 	__print_symbol(fmt, addr);
 }
 
-static DUMP_TRACE_CONST struct stacktrace_ops print_trace_ops = {
+static const struct stacktrace_ops print_trace_ops = {
 	.stack = print_trace_stack,
 	.address = print_trace_address,
 	.walk_stack = print_context_stack,
@@ -220,6 +217,13 @@ void libcfs_debug_dumpstack(struct task_struct *tsk)
 		   &print_trace_ops, NULL);
 	printk("\n");
 }
+#else /* !CONFIG_X86 */
+void libcfs_debug_dumpstack(struct task_struct *tsk)
+{
+	if (tsk == NULL || tsk == current)
+		dump_stack();
+}
+#endif
 
 task_t *libcfs_current(void)
 {
