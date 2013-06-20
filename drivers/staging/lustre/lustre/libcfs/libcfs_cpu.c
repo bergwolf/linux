@@ -201,4 +201,21 @@ cfs_cpu_init(void)
 	return cfs_cpt_table != NULL ? 0 : -1;
 }
 
+int cfs_cpu_ht_nsiblings(int cpu)
+{
+	return 1;
+}
+EXPORT_SYMBOL(cfs_cpu_ht_nsiblings);
+
+cpumask_t *cfs_cpt_cpumask(struct cfs_cpt_table *cptab, int cpt)
+{
+	return NULL;
+}
+EXPORT_SYMBOL(cfs_cpt_cpumask);
+
+int cfs_cpt_table_print(struct cfs_cpt_table *cptab, char *buf, int len)
+{
+	return 0;
+}
+
 #endif /* HAVE_LIBCFS_CPT */
