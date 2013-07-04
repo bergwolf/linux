@@ -351,6 +351,12 @@ void libcfs_debug_dumplog_internal(void *arg)
 	POP_JOURNAL;
 }
 
+void libcfs_debug_dumplog_pid(pid_t pid, void *unused)
+{
+	libcfs_debug_dumplog_internal((void *)(long)pid);
+}
+EXPORT_SYMBOL(libcfs_debug_dumplog_pid);
+
 int libcfs_debug_dumplog_thread(void *arg)
 {
 	libcfs_debug_dumplog_internal(arg);

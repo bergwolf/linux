@@ -249,6 +249,7 @@ do {					    \
 #define LCONSOLE_EMERG(format, ...) CDEBUG(D_CONSOLE | D_EMERG, format, ## __VA_ARGS__)
 
 
+void libcfs_debug_dumplog_pid(pid_t, void *);
 void libcfs_log_goto(struct libcfs_debug_msg_data *, const char *, long_ptr_t);
 #define GOTO(label, rc)						 \
 do {								    \

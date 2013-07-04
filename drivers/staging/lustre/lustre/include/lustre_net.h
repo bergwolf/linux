@@ -2323,7 +2323,7 @@ struct ptlrpc_thread {
 	/**
 	 * put watchdog in the structure per thread b=14840
 	 */
-	struct lc_watchdog *t_watchdog;
+	struct tm_watchdog_item *t_watchdog;
 	/**
 	 * the svc this thread belonged to b=18582
 	 */
