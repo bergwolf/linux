@@ -293,6 +293,27 @@ static inline void lockup_detector_init(void)
 }
 #endif
 
+struct tm_watchdog;
+struct tm_watchdog_item;
+#ifdef CONFIG_TIMER_BASED_LOCKUP_DETECTOR
+extern void tm_watchdog_touch_item(struct tm_watchdog_item *, int);
+extern void tm_watchdog_disable_item(struct tm_watchdog_item *);
+extern void tm_watchdog_delete_item(struct tm_watchdog_item *);
+extern struct tm_watchdog_item *
+tm_watchdog_add_item(void (*callback)(pid_t, void *),
+		     void (*freedata)(void *),
+		     void *data, gfp_t);
+#else
+static inline void tm_watchdog_touch_item(struct tm_watchdog_item *twi,
+					  int time) {}
+static inline void tm_watchdog_disable_item(struct tm_watchdog_item *twi) {}
+static inline void tm_watchdog_delete_item(struct tm_watchdog_item *twi) {}
+static inline struct tm_watchdog_item *
+tm_watchdog_add_item(void (*callback)(pid_t, void *),
+		     void (*freedata)(void *),
+		     void *data, gfp_t flags) {}
+#endif /* CONFIG_TIMER_BASED_LOCKUP_DETECTOR */
+
 /* Attach to any functions which should be ignored in wchan output. */
 #define __sched		__attribute__((__section__(".sched.text")))
 
