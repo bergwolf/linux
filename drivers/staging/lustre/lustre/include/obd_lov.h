@@ -97,19 +97,20 @@ static inline __u32 lov_mds_md_stripecnt(int ea_size, __u32 lmm_magic)
 	__rem;								\
   })
 #else
-# define lov_do_div64(n,base) ({					\
-	uint64_t __rem;							\
+# define lov_do_div64(n, base) ({					\
+	u64 __rem, __n = n;						\
 	if ((sizeof(base) > 4) && (((base) & 0xffffffff00000000ULL) != 0)) {  \
-		int __remainder;					      \
-		LASSERTF(!((base) & (LOV_MIN_STRIPE_SIZE - 1)), "64 bit lov " \
-			 "division %llu / %llu\n", (n), (uint64_t)(base));    \
-		__remainder = (n) & (LOV_MIN_STRIPE_SIZE - 1);		\
-		(n) >>= LOV_MIN_STRIPE_BITS;				\
-		__rem = do_div(n, (base) >> LOV_MIN_STRIPE_BITS);	\
+		int __remainder;					\
+		LASSERTF(((base) & (LOV_MIN_STRIPE_SIZE - 1)) != 0,	\
+			"64 bit lov " "division %llu / %llu\n",		\
+			(__n), (uint64_t)(base));			\
+		__remainder = (__n) & (LOV_MIN_STRIPE_SIZE - 1);	\
+		(__n) >>= LOV_MIN_STRIPE_BITS;				\
+		__rem = do_div((__n), (base) >> LOV_MIN_STRIPE_BITS);\
 		__rem <<= LOV_MIN_STRIPE_BITS;				\
 		__rem += __remainder;					\
 	} else {							\
-		__rem = do_div(n, base);				\
+		__rem = do_div((__n), base);			\
 	}								\
 	__rem;								\
   })

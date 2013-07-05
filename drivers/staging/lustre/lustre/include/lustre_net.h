@@ -2322,8 +2322,13 @@ struct ptlrpc_thread {
 	pid_t t_pid;
 	/**
 	 * put watchdog in the structure per thread b=14840
+	 *
+	 * Lustre watchdog is removed for client in the hope
+	 * of a generic watchdog can be merged in kernel.
+	 * When that happens, we should add bellow back.
+	 *
+	 * struct lc_watchdog *t_watchdog;
 	 */
-	struct lc_watchdog *t_watchdog;
 	/**
 	 * the svc this thread belonged to b=18582
 	 */
@@ -3307,15 +3312,6 @@ static inline int ptlrpc_no_resend(struct ptlrpc_request *req)
 		spin_unlock(&req->rq_lock);
 	}
 	return req->rq_no_resend;
-}
-
-static inline int
-ptlrpc_server_get_timeout(struct ptlrpc_service_part *svcpt)
-{
-	int at = AT_OFF ? 0 : at_get(&svcpt->scp_at_estimate);
-
-	return svcpt->scp_service->srv_watchdog_factor *
-	       max_t(int, at, obd_timeout);
 }
 
 static inline struct ptlrpc_service *
