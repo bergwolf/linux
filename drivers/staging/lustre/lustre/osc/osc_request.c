@@ -828,7 +828,7 @@ static void osc_announce_cached(struct client_obd *cli, struct obdo *oa,
 	LASSERT(!(oa->o_valid & bits));
 
 	oa->o_valid |= bits;
-	client_obd_list_lock(&cli->cl_loi_list_lock);
+	spin_lock(&cli->cl_loi_list_lock);
 	oa->o_dirty = cli->cl_dirty;
 	if (unlikely(cli->cl_dirty - cli->cl_dirty_transit >
 		     cli->cl_dirty_max)) {
@@ -859,7 +859,7 @@ static void osc_announce_cached(struct client_obd *cli, struct obdo *oa,
 	oa->o_grant = cli->cl_avail_grant + cli->cl_reserved_grant;
 	oa->o_dropped = cli->cl_lost_grant;
 	cli->cl_lost_grant = 0;
-	client_obd_list_unlock(&cli->cl_loi_list_lock);
+	spin_unlock(&cli->cl_loi_list_lock);
 	CDEBUG(D_CACHE,"dirty: "LPU64" undirty: %u dropped %u grant: "LPU64"\n",
 	       oa->o_dirty, oa->o_undirty, oa->o_dropped, oa->o_grant);
 
@@ -875,9 +875,9 @@ void osc_update_next_shrink(struct client_obd *cli)
 
 static void __osc_update_grant(struct client_obd *cli, obd_size grant)
 {
-	client_obd_list_lock(&cli->cl_loi_list_lock);
+	spin_lock(&cli->cl_loi_list_lock);
 	cli->cl_avail_grant += grant;
-	client_obd_list_unlock(&cli->cl_loi_list_lock);
+	spin_unlock(&cli->cl_loi_list_lock);
 }
 
 static void osc_update_grant(struct client_obd *cli, struct ost_body *body)
@@ -915,10 +915,10 @@ out:
 
 static void osc_shrink_grant_local(struct client_obd *cli, struct obdo *oa)
 {
-	client_obd_list_lock(&cli->cl_loi_list_lock);
+	spin_lock(&cli->cl_loi_list_lock);
 	oa->o_grant = cli->cl_avail_grant / 4;
 	cli->cl_avail_grant -= oa->o_grant;
-	client_obd_list_unlock(&cli->cl_loi_list_lock);
+	spin_unlock(&cli->cl_loi_list_lock);
 	if (!(oa->o_valid & OBD_MD_FLFLAGS)) {
 		oa->o_valid |= OBD_MD_FLFLAGS;
 		oa->o_flags = 0;
@@ -936,10 +936,10 @@ static int osc_shrink_grant(struct client_obd *cli)
 	__u64 target_bytes = (cli->cl_max_rpcs_in_flight + 1) *
 			     (cli->cl_max_pages_per_rpc << PAGE_CACHE_SHIFT);
 
-	client_obd_list_lock(&cli->cl_loi_list_lock);
+	spin_lock(&cli->cl_loi_list_lock);
 	if (cli->cl_avail_grant <= target_bytes)
 		target_bytes = cli->cl_max_pages_per_rpc << PAGE_CACHE_SHIFT;
-	client_obd_list_unlock(&cli->cl_loi_list_lock);
+	spin_unlock(&cli->cl_loi_list_lock);
 
 	return osc_shrink_grant_to_target(cli, target_bytes);
 }
@@ -950,7 +950,7 @@ int osc_shrink_grant_to_target(struct client_obd *cli, __u64 target_bytes)
 	struct ost_body	*body;
 	ENTRY;
 
-	client_obd_list_lock(&cli->cl_loi_list_lock);
+	spin_lock(&cli->cl_loi_list_lock);
 	/* Don't shrink if we are already above or below the desired limit
 	 * We don't want to shrink below a single RPC, as that will negatively
 	 * impact block allocation and long-term performance. */
@@ -958,10 +958,10 @@ int osc_shrink_grant_to_target(struct client_obd *cli, __u64 target_bytes)
 		target_bytes = cli->cl_max_pages_per_rpc << PAGE_CACHE_SHIFT;
 
 	if (target_bytes >= cli->cl_avail_grant) {
-		client_obd_list_unlock(&cli->cl_loi_list_lock);
+		spin_unlock(&cli->cl_loi_list_lock);
 		RETURN(0);
 	}
-	client_obd_list_unlock(&cli->cl_loi_list_lock);
+	spin_unlock(&cli->cl_loi_list_lock);
 
 	OBD_ALLOC_PTR(body);
 	if (!body)
@@ -969,10 +969,10 @@ int osc_shrink_grant_to_target(struct client_obd *cli, __u64 target_bytes)
 
 	osc_announce_cached(cli, &body->oa, 0);
 
-	client_obd_list_lock(&cli->cl_loi_list_lock);
+	spin_lock(&cli->cl_loi_list_lock);
 	body->oa.o_grant = cli->cl_avail_grant - target_bytes;
 	cli->cl_avail_grant = target_bytes;
-	client_obd_list_unlock(&cli->cl_loi_list_lock);
+	spin_unlock(&cli->cl_loi_list_lock);
 	if (!(body->oa.o_valid & OBD_MD_FLFLAGS)) {
 		body->oa.o_valid |= OBD_MD_FLFLAGS;
 		body->oa.o_flags = 0;
@@ -1060,7 +1060,7 @@ static void osc_init_grant(struct client_obd *cli, struct obd_connect_data *ocd)
 	 * race is tolerable here: if we're evicted, but imp_state already
 	 * left EVICTED state, then cl_dirty must be 0 already.
 	 */
-	client_obd_list_lock(&cli->cl_loi_list_lock);
+	spin_lock(&cli->cl_loi_list_lock);
 	if (cli->cl_import->imp_state == LUSTRE_IMP_EVICTED)
 		cli->cl_avail_grant = ocd->ocd_grant;
 	else
@@ -1077,7 +1077,7 @@ static void osc_init_grant(struct client_obd *cli, struct obd_connect_data *ocd)
 
 	/* determine the appropriate chunk size used by osc_extent. */
 	cli->cl_chunkbits = max_t(int, PAGE_CACHE_SHIFT, ocd->ocd_blocksize);
-	client_obd_list_unlock(&cli->cl_loi_list_lock);
+	spin_unlock(&cli->cl_loi_list_lock);
 
 	CDEBUG(D_CACHE, "%s, setting cl_avail_grant: %ld cl_lost_grant: %ld."
 		"chunk bits: %d.\n", cli->cl_import->imp_obd->obd_name,
@@ -2028,7 +2028,7 @@ static int brw_interpret(const struct lu_env *env,
 	osc_release_ppga(aa->aa_ppga, aa->aa_page_count);
 	ptlrpc_lprocfs_brw(req, req->rq_bulk->bd_nob_transferred);
 
-	client_obd_list_lock(&cli->cl_loi_list_lock);
+	spin_lock(&cli->cl_loi_list_lock);
 	/* We need to decrement before osc_ap_completion->osc_wake_cache_waiters
 	 * is called so we know whether to go to sync BRWs or wait for more
 	 * RPCs to complete */
@@ -2037,7 +2037,7 @@ static int brw_interpret(const struct lu_env *env,
 	else
 		cli->cl_r_in_flight--;
 	osc_wake_cache_waiters(cli);
-	client_obd_list_unlock(&cli->cl_loi_list_lock);
+	spin_unlock(&cli->cl_loi_list_lock);
 
 	osc_io_unplug(env, cli, NULL, PDL_POLICY_SAME);
 	RETURN(rc);
@@ -2193,7 +2193,7 @@ int osc_build_rpc(const struct lu_env *env, struct client_obd *cli,
 	if (tmp != NULL)
 		tmp->oap_request = ptlrpc_request_addref(req);
 
-	client_obd_list_lock(&cli->cl_loi_list_lock);
+	spin_lock(&cli->cl_loi_list_lock);
 	starting_offset >>= PAGE_CACHE_SHIFT;
 	if (cmd == OBD_BRW_READ) {
 		cli->cl_r_in_flight++;
@@ -2208,7 +2208,7 @@ int osc_build_rpc(const struct lu_env *env, struct client_obd *cli,
 		lprocfs_oh_tally_log2(&cli->cl_write_offset_hist,
 				      starting_offset + 1);
 	}
-	client_obd_list_unlock(&cli->cl_loi_list_lock);
+	spin_unlock(&cli->cl_loi_list_lock);
 
 	DEBUG_REQ(D_INODE, req, "%d pages, aa %p. now %dr/%dw in flight",
 		  page_count, aa, cli->cl_r_in_flight,
@@ -3305,12 +3305,12 @@ static int osc_reconnect(const struct lu_env *env,
 	if (data != NULL && (data->ocd_connect_flags & OBD_CONNECT_GRANT)) {
 		long lost_grant;
 
-		client_obd_list_lock(&cli->cl_loi_list_lock);
+		spin_lock(&cli->cl_loi_list_lock);
 		data->ocd_grant = (cli->cl_avail_grant + cli->cl_dirty) ?:
 				2 * cli_brw_size(obd);
 		lost_grant = cli->cl_lost_grant;
 		cli->cl_lost_grant = 0;
-		client_obd_list_unlock(&cli->cl_loi_list_lock);
+		spin_unlock(&cli->cl_loi_list_lock);
 
 		CDEBUG(D_RPCTRACE, "ocd_connect_flags: "LPX64" ocd_version: %d"
 		       " ocd_grant: %d, lost: %ld.\n", data->ocd_connect_flags,
@@ -3375,10 +3375,10 @@ static int osc_import_event(struct obd_device *obd,
 	switch (event) {
 	case IMP_EVENT_DISCON: {
 		cli = &obd->u.cli;
-		client_obd_list_lock(&cli->cl_loi_list_lock);
+		spin_lock(&cli->cl_loi_list_lock);
 		cli->cl_avail_grant = 0;
 		cli->cl_lost_grant = 0;
-		client_obd_list_unlock(&cli->cl_loi_list_lock);
+		spin_unlock(&cli->cl_loi_list_lock);
 		break;
 	}
 	case IMP_EVENT_INACTIVE: {

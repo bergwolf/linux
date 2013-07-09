@@ -37,7 +37,22 @@
 #ifndef __OBD_H
 #define __OBD_H
 
-#include <linux/obd.h>
+#include <linux/fs.h>
+#include <linux/list.h>
+#include <linux/sched.h>  /* for struct task_struct, for current.h */
+#include <linux/proc_fs.h>
+#include <linux/mount.h>
+#include <linux/lustre_intent.h>
+
+#include <obd_support.h>
+#include <lustre/lustre_idl.h>
+#include <lu_ref.h>
+#include <lustre_lib.h>
+#include <lustre_export.h>
+#include <lustre_fld.h>
+#include <lustre_capa.h>
+
+#include <linux/libcfs/bitmap.h>
 
 #define IOC_OSC_TYPE	 'h'
 #define IOC_OSC_MIN_NR       20
@@ -48,14 +63,10 @@
 #define IOC_MDC_MIN_NR       20
 #define IOC_MDC_MAX_NR       50
 
-#include <lustre/lustre_idl.h>
-#include <lu_ref.h>
-#include <lustre_lib.h>
-#include <lustre_export.h>
-#include <lustre_fld.h>
-#include <lustre_capa.h>
-
-#include <linux/libcfs/bitmap.h>
+struct ll_iattr {
+	struct iattr	iattr;
+	unsigned int	ia_attr_flags;
+};
 
 
 #define MAX_OBD_DEVICES 8192
@@ -452,14 +463,10 @@ struct client_obd {
 	 * blocking everywhere, but we don't want to slow down fast-path of
 	 * our main platform.)
 	 *
-	 * Exact type of ->cl_loi_list_lock is defined in arch/obd.h together
-	 * with client_obd_list_{un,}lock() and
-	 * client_obd_list_lock_{init,done}() functions.
-	 *
 	 * NB by Jinshan: though field names are still _loi_, but actually
 	 * osc_object{}s are in the list.
 	 */
-	client_obd_lock_t	cl_loi_list_lock;
+	spinlock_t		       cl_loi_list_lock;
 	struct list_head	       cl_loi_ready_list;
 	struct list_head	       cl_loi_hp_ready_list;
 	struct list_head	       cl_loi_write_list;
@@ -486,7 +493,7 @@ struct client_obd {
 	atomic_t		 cl_lru_shrinkers;
 	atomic_t		 cl_lru_in_list;
 	struct list_head		 cl_lru_list; /* lru page list */
-	client_obd_lock_t	 cl_lru_list_lock; /* page list protector */
+	spinlock_t		cl_lru_list_lock; /* page list protector */
 
 	/* number of in flight destroy rpcs is limited to max_rpcs_in_flight */
 	atomic_t	     cl_destroy_in_flight;

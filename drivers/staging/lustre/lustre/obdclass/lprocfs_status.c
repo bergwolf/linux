@@ -1975,9 +1975,9 @@ int lprocfs_obd_rd_max_pages_per_rpc(struct seq_file *m, void *data)
 	struct client_obd *cli = &dev->u.cli;
 	int rc;
 
-	client_obd_list_lock(&cli->cl_loi_list_lock);
+	spin_lock(&cli->cl_loi_list_lock);
 	rc = seq_printf(m, "%d\n", cli->cl_max_pages_per_rpc);
-	client_obd_list_unlock(&cli->cl_loi_list_lock);
+	spin_unlock(&cli->cl_loi_list_lock);
 	return rc;
 }
 EXPORT_SYMBOL(lprocfs_obd_rd_max_pages_per_rpc);
