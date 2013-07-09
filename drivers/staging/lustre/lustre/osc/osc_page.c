@@ -53,8 +53,8 @@ static int osc_lru_reserve(const struct lu_env *env, struct osc_object *obj,
 
 /*
  * Comment out osc_page_protected because it may sleep inside the
- * the client_obd_list_lock.
- * client_obd_list_lock -> osc_ap_completion -> osc_completion ->
+ * the cli->cl_lru_list_lock.
+ * cli->cl_lru_list_lock -> osc_ap_completion -> osc_completion ->
  *   -> osc_page_protected -> osc_page_is_dlocked -> osc_match_base
  *   -> ldlm_lock_match -> sptlrpc_import_check_ctx -> sleep.
  */
@@ -679,7 +679,7 @@ int osc_lru_shrink(struct client_obd *cli, int target)
 	pvec = osc_env_info(env)->oti_pvec;
 	io = &osc_env_info(env)->oti_io;
 
-	client_obd_list_lock(&cli->cl_lru_list_lock);
+	spin_lock(&cli->cl_lru_list_lock);
 	atomic_inc(&cli->cl_lru_shrinkers);
 	maxscan = min(target << 1, atomic_read(&cli->cl_lru_in_list));
 	while (!list_empty(&cli->cl_lru_list)) {
@@ -701,7 +701,7 @@ int osc_lru_shrink(struct client_obd *cli, int target)
 			struct cl_object *tmp = page->cp_obj;
 
 			cl_object_get(tmp);
-			client_obd_list_unlock(&cli->cl_lru_list_lock);
+			spin_unlock(&cli->cl_lru_list_lock);
 
 			if (clobj != NULL) {
 				count -= discard_pagevec(env, io, pvec, index);
@@ -717,7 +717,7 @@ int osc_lru_shrink(struct client_obd *cli, int target)
 			io->ci_ignore_layout = 1;
 			rc = cl_io_init(env, io, CIT_MISC, clobj);
 
-			client_obd_list_lock(&cli->cl_lru_list_lock);
+			spin_lock(&cli->cl_lru_list_lock);
 
 			if (rc != 0)
 				break;
@@ -739,14 +739,14 @@ int osc_lru_shrink(struct client_obd *cli, int target)
 			break;
 
 		if (unlikely(index == OTI_PVEC_SIZE)) {
-			client_obd_list_unlock(&cli->cl_lru_list_lock);
+			spin_unlock(&cli->cl_lru_list_lock);
 			count -= discard_pagevec(env, io, pvec, index);
 			index = 0;
 
-			client_obd_list_lock(&cli->cl_lru_list_lock);
+			spin_lock(&cli->cl_lru_list_lock);
 		}
 	}
-	client_obd_list_unlock(&cli->cl_lru_list_lock);
+	spin_unlock(&cli->cl_lru_list_lock);
 
 	if (clobj != NULL) {
 		count -= discard_pagevec(env, io, pvec, index);
@@ -768,13 +768,13 @@ static void osc_lru_add(struct client_obd *cli, struct osc_page *opg)
 		return;
 
 	atomic_dec(&cli->cl_lru_busy);
-	client_obd_list_lock(&cli->cl_lru_list_lock);
+	spin_lock(&cli->cl_lru_list_lock);
 	if (list_empty(&opg->ops_lru)) {
 		list_move_tail(&opg->ops_lru, &cli->cl_lru_list);
 		atomic_inc_return(&cli->cl_lru_in_list);
 		wakeup = atomic_read(&osc_lru_waiters) > 0;
 	}
-	client_obd_list_unlock(&cli->cl_lru_list_lock);
+	spin_unlock(&cli->cl_lru_list_lock);
 
 	if (wakeup) {
 		osc_lru_shrink(cli, osc_cache_too_much(cli));
@@ -787,7 +787,7 @@ static void osc_lru_add(struct client_obd *cli, struct osc_page *opg)
 static void osc_lru_del(struct client_obd *cli, struct osc_page *opg, bool del)
 {
 	if (opg->ops_in_lru) {
-		client_obd_list_lock(&cli->cl_lru_list_lock);
+		spin_lock(&cli->cl_lru_list_lock);
 		if (!list_empty(&opg->ops_lru)) {
 			LASSERT(atomic_read(&cli->cl_lru_in_list) > 0);
 			list_del_init(&opg->ops_lru);
@@ -798,7 +798,7 @@ static void osc_lru_del(struct client_obd *cli, struct osc_page *opg, bool del)
 			LASSERT(atomic_read(&cli->cl_lru_busy) > 0);
 			atomic_dec(&cli->cl_lru_busy);
 		}
-		client_obd_list_unlock(&cli->cl_lru_list_lock);
+		spin_unlock(&cli->cl_lru_list_lock);
 		if (del) {
 			atomic_inc(cli->cl_lru_left);
 			/* this is a great place to release more LRU pages if

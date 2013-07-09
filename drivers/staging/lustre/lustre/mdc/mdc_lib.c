@@ -45,10 +45,10 @@ static void __mdc_pack_body(struct mdt_body *b, __u32 suppgid)
 	LASSERT (b != NULL);
 
 	b->suppgid = suppgid;
-	b->uid = current_uid();
-	b->gid = current_gid();
-	b->fsuid = current_fsuid();
-	b->fsgid = current_fsgid();
+	b->uid = from_kuid(&init_user_ns, current_uid());
+	b->gid = from_kgid(&init_user_ns, current_gid());
+	b->fsuid = from_kuid(&init_user_ns, current_fsuid());
+	b->fsgid = from_kgid(&init_user_ns, current_fsgid());
 	b->capability = cfs_curproc_cap_pack();
 }
 
@@ -219,8 +219,8 @@ void mdc_open_pack(struct ptlrpc_request *req, struct md_op_data *op_data,
 
 	/* XXX do something about time, uid, gid */
 	rec->cr_opcode   = REINT_OPEN;
-	rec->cr_fsuid   = current_fsuid();
-	rec->cr_fsgid   = current_fsgid();
+	rec->cr_fsuid    = from_kuid(&init_user_ns, current_fsuid());
+	rec->cr_fsgid    = from_kgid(&init_user_ns, current_fsgid());
 	rec->cr_cap      = cfs_curproc_cap_pack();
 	if (op_data != NULL) {
 		rec->cr_fid1 = op_data->op_fid1;
@@ -299,16 +299,16 @@ static void mdc_setattr_pack_rec(struct mdt_rec_setattr *rec,
 				 struct md_op_data *op_data)
 {
 	rec->sa_opcode  = REINT_SETATTR;
-	rec->sa_fsuid   = current_fsuid();
-	rec->sa_fsgid   = current_fsgid();
+	rec->sa_fsuid   = from_kuid(&init_user_ns, current_fsuid());
+	rec->sa_fsgid   = from_kgid(&init_user_ns, current_fsgid());
 	rec->sa_cap     = cfs_curproc_cap_pack();
 	rec->sa_suppgid = -1;
 
 	rec->sa_fid    = op_data->op_fid1;
 	rec->sa_valid  = attr_pack(op_data->op_attr.ia_valid);
 	rec->sa_mode   = op_data->op_attr.ia_mode;
-	rec->sa_uid    = op_data->op_attr.ia_uid;
-	rec->sa_gid    = op_data->op_attr.ia_gid;
+	rec->sa_uid    = from_kuid(&init_user_ns, op_data->op_attr.ia_uid);
+	rec->sa_gid    = from_kgid(&init_user_ns, op_data->op_attr.ia_gid);
 	rec->sa_size   = op_data->op_attr.ia_size;
 	rec->sa_blocks = op_data->op_attr_blocks;
 	rec->sa_atime  = LTIME_S(op_data->op_attr.ia_atime);
@@ -316,8 +316,9 @@ static void mdc_setattr_pack_rec(struct mdt_rec_setattr *rec,
 	rec->sa_ctime  = LTIME_S(op_data->op_attr.ia_ctime);
 	rec->sa_attr_flags = ((struct ll_iattr *)&op_data->op_attr)->ia_attr_flags;
 	if ((op_data->op_attr.ia_valid & ATTR_GID) &&
-	    current_is_in_group(op_data->op_attr.ia_gid))
-		rec->sa_suppgid = op_data->op_attr.ia_gid;
+	    in_group_p(op_data->op_attr.ia_gid))
+		rec->sa_suppgid =
+			from_kgid(&init_user_ns, op_data->op_attr.ia_gid);
 	else
 		rec->sa_suppgid = op_data->op_suppgids[0];
 
@@ -505,9 +506,9 @@ static int mdc_req_avail(struct client_obd *cli, struct mdc_cache_waiter *mcw)
 {
 	int rc;
 	ENTRY;
-	client_obd_list_lock(&cli->cl_loi_list_lock);
+	spin_lock(&cli->cl_loi_list_lock);
 	rc = list_empty(&mcw->mcw_entry);
-	client_obd_list_unlock(&cli->cl_loi_list_lock);
+	spin_unlock(&cli->cl_loi_list_lock);
 	RETURN(rc);
 };
 
@@ -520,22 +521,22 @@ int mdc_enter_request(struct client_obd *cli)
 	struct mdc_cache_waiter mcw;
 	struct l_wait_info lwi = LWI_INTR(LWI_ON_SIGNAL_NOOP, NULL);
 
-	client_obd_list_lock(&cli->cl_loi_list_lock);
+	spin_lock(&cli->cl_loi_list_lock);
 	if (cli->cl_r_in_flight >= cli->cl_max_rpcs_in_flight) {
 		list_add_tail(&mcw.mcw_entry, &cli->cl_cache_waiters);
 		init_waitqueue_head(&mcw.mcw_waitq);
-		client_obd_list_unlock(&cli->cl_loi_list_lock);
+		spin_unlock(&cli->cl_loi_list_lock);
 		rc = l_wait_event(mcw.mcw_waitq, mdc_req_avail(cli, &mcw), &lwi);
 		if (rc) {
-			client_obd_list_lock(&cli->cl_loi_list_lock);
+			spin_lock(&cli->cl_loi_list_lock);
 			if (list_empty(&mcw.mcw_entry))
 				cli->cl_r_in_flight--;
 			list_del_init(&mcw.mcw_entry);
-			client_obd_list_unlock(&cli->cl_loi_list_lock);
+			spin_unlock(&cli->cl_loi_list_lock);
 		}
 	} else {
 		cli->cl_r_in_flight++;
-		client_obd_list_unlock(&cli->cl_loi_list_lock);
+		spin_unlock(&cli->cl_loi_list_lock);
 	}
 	return rc;
 }
@@ -545,7 +546,7 @@ void mdc_exit_request(struct client_obd *cli)
 	struct list_head *l, *tmp;
 	struct mdc_cache_waiter *mcw;
 
-	client_obd_list_lock(&cli->cl_loi_list_lock);
+	spin_lock(&cli->cl_loi_list_lock);
 	cli->cl_r_in_flight--;
 	list_for_each_safe(l, tmp, &cli->cl_cache_waiters) {
 		if (cli->cl_r_in_flight >= cli->cl_max_rpcs_in_flight) {
@@ -560,5 +561,5 @@ void mdc_exit_request(struct client_obd *cli)
 	}
 	/* Empty waiting list? Decrease reqs in-flight number */
 
-	client_obd_list_unlock(&cli->cl_loi_list_lock);
+	spin_unlock(&cli->cl_loi_list_lock);
 }
