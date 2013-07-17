@@ -36,11 +36,11 @@
  * who acquired references to instance of struct foo, add lu_ref field to it:
  *
  * \code
- *	 struct foo {
- *		 atomic_t      foo_refcount;
- *		 struct lu_ref foo_reference;
- *		 ...
- *	 };
+ *         struct foo {
+ *                 atomic_t      foo_refcount;
+ *                 struct lu_ref foo_reference;
+ *                 ...
+ *         };
  * \endcode
  *
  * foo::foo_reference has to be initialized by calling
@@ -54,28 +54,28 @@
  * usages are:
  *
  * \code
- *	struct bar *bar;
+ *        struct bar *bar;
  *
- *	// bar owns a reference to foo.
- *	bar->bar_foo = foo_get(foo);
- *	lu_ref_add(&foo->foo_reference, "bar", bar);
+ *        // bar owns a reference to foo.
+ *        bar->bar_foo = foo_get(foo);
+ *        lu_ref_add(&foo->foo_reference, "bar", bar);
  *
- *	...
+ *        ...
  *
- *	// reference from bar to foo is released.
- *	lu_ref_del(&foo->foo_reference, "bar", bar);
- *	foo_put(bar->bar_foo);
+ *        // reference from bar to foo is released.
+ *        lu_ref_del(&foo->foo_reference, "bar", bar);
+ *        foo_put(bar->bar_foo);
  *
  *
- *	// current thread acquired a temporary reference to foo.
- *	foo_get(foo);
- *	lu_ref_add(&foo->reference, __FUNCTION__, current);
+ *        // current thread acquired a temporary reference to foo.
+ *        foo_get(foo);
+ *        lu_ref_add(&foo->reference, __FUNCTION__, current);
  *
- *	...
+ *        ...
  *
- *	// temporary reference is released.
- *	lu_ref_del(&foo->reference, __FUNCTION__, current);
- *	foo_put(foo);
+ *        // temporary reference is released.
+ *        lu_ref_del(&foo->reference, __FUNCTION__, current);
+ *        foo_put(foo);
  * \endcode
  *
  * \e Et \e cetera. Often it makes sense to include lu_ref_add() and
@@ -91,15 +91,15 @@
  * lu_ref_del_at():
  *
  * \code
- *	// There is a large number of bar's for a single foo.
- *	bar->bar_foo     = foo_get(foo);
- *	bar->bar_foo_ref = lu_ref_add(&foo->foo_reference, "bar", bar);
+ *        // There is a large number of bar's for a single foo.
+ *        bar->bar_foo     = foo_get(foo);
+ *        bar->bar_foo_ref = lu_ref_add(&foo->foo_reference, "bar", bar);
  *
- *	...
+ *        ...
  *
- *	// reference from bar to foo is released.
- *	lu_ref_del_at(&foo->foo_reference, bar->bar_foo_ref, "bar", bar);
- *	foo_put(bar->bar_foo);
+ *        // reference from bar to foo is released.
+ *        lu_ref_del_at(&foo->foo_reference, bar->bar_foo_ref, "bar", bar);
+ *        foo_put(bar->bar_foo);
  * \endcode
  *
  * lu_ref interface degrades gracefully in case of memory shortages.
@@ -107,6 +107,75 @@
  * @{
  */
 
+#ifdef CONFIG_LUSTRE_DEBUG_LU_REF_CHECK
+
+/* An incomplete type (defined locally in lu_ref.c) */
+struct lu_ref_link;
+
+/**
+ * Data-structure to keep track of references to a given object. This is used
+ * for debugging.
+ *
+ * lu_ref is embedded into an object which other entities (objects, threads,
+ * etc.) refer to.
+ */
+struct lu_ref {
+	/**
+	 * Spin-lock protecting lu_ref::lf_list.
+	 */
+	spinlock_t		lf_guard;
+	/**
+	 * List of all outstanding references (each represented by struct
+	 * lu_ref_link), pointing to this object.
+	 */
+	struct list_head           lf_list;
+	/**
+	 * # of links.
+	 */
+	short                lf_refs;
+	/**
+	 * Flag set when lu_ref_add() failed to allocate lu_ref_link. It is
+	 * used to mask spurious failure of the following lu_ref_del().
+	 */
+	short                lf_failed;
+	/**
+	 * flags - attribute for the lu_ref, for pad and future use.
+	 */
+	short                lf_flags;
+	/**
+	 * Where was I initialized?
+	 */
+	short                lf_line;
+	const char          *lf_func;
+	/**
+	 * Linkage into a global list of all lu_ref's (lu_ref_refs).
+	 */
+	struct list_head           lf_linkage;
+};
+
+int lu_ref_global_init(void);
+void lu_ref_global_fini(void);
+void lu_ref_init_loc(struct lu_ref *ref, const char *func, const int line);
+void lu_ref_fini    (struct lu_ref *ref);
+#define lu_ref_init(ref) lu_ref_init_loc(ref, __FUNCTION__, __LINE__)
+
+struct lu_ref_link *lu_ref_add       (struct lu_ref *ref, const char *scope,
+				      const void *source);
+struct lu_ref_link *lu_ref_add_atomic(struct lu_ref *ref, const char *scope,
+				      const void *source);
+void lu_ref_del                      (struct lu_ref *ref, const char *scope,
+				      const void *source);
+void lu_ref_set_at                   (struct lu_ref *ref,
+				      struct lu_ref_link *link,
+				      const char *scope, const void *source0,
+				      const void *source1);
+void lu_ref_del_at                   (struct lu_ref *ref,
+				      struct lu_ref_link *link,
+				      const char *scope, const void *source);
+void lu_ref_print                    (const struct lu_ref *ref);
+void lu_ref_print_all                (void);
+
+#else /* !CONFIG_LUSTRE_DEBUG_LU_REF_CHECK */
 
 struct lu_ref  {};
 
@@ -164,6 +233,7 @@ static inline void lu_ref_print(const struct lu_ref *ref)
 static inline void lu_ref_print_all(void)
 {
 }
+#endif /* CONFIG_LUSTRE_DEBUG_LU_REF_CHECK */
 
 /** @} lu */
 

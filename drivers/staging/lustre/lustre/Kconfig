@@ -40,6 +40,16 @@ config LUSTRE_OBD_MAX_IOCTL_BUFFER
 
 	  If unsure, use default.
 
+config LUSTRE_DEBUG_LU_REF_CHECK
+	bool "Enable Lustre DEBUG object refcount checks"
+	depends on LUSTRE_FS
+	default false
+	help
+	  This option is mainly for debug purpose. It enables Lustre code to track
+	  references between objects.
+
+	  If unsure, say N.
+
 config LUSTRE_DEBUG_EXPENSIVE_CHECK
 	bool "Enable Lustre DEBUG checks"
 	depends on LUSTRE_FS
