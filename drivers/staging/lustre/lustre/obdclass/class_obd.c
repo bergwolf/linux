@@ -96,6 +96,98 @@ EXPORT_SYMBOL(obd_dirty_transit_pages);
 char obd_jobid_var[JOBSTATS_JOBID_VAR_MAX_LEN + 1] = JOBSTATS_DISABLE;
 EXPORT_SYMBOL(obd_jobid_var);
 
+static char *self_environ_file = "/proc/self/environ";
+static int obd_get_environ(const char *key, char *value, int *val_len)
+{
+	struct path path;
+	struct file *filp = NULL;
+	int buf_len = PAGE_CACHE_SIZE;
+	int key_len = strlen(key);
+	char *buffer = NULL;
+	loff_t pos = 0;
+	int rc;
+
+	buffer = kmalloc(buf_len, GFP_USER);
+	if (!buffer)
+		return -ENOMEM;
+
+	rc = kern_path(self_environ_file, LOOKUP_FOLLOW, &path);
+	if (rc)
+		goto out;
+
+	filp = dentry_open(&path, O_RDONLY, current_cred());
+	if (IS_ERR(filp)) {
+		rc = PTR_ERR(filp);
+		filp = NULL;
+		goto out;
+	}
+
+	/* loop reading... */
+	while (1) {
+		int scan_len, this_len;
+		char *env_start, *env_end;
+		rc = kernel_read(filp, pos, buffer, buf_len);
+		if (rc <= 0)
+			break;
+
+		pos += rc;
+		/* Parse the buffer to find out the specified key/value pair.
+		 * The "key=value" entries are separated by '\0'. */
+		env_start = buffer;
+		scan_len = this_len = rc;
+		while (scan_len) {
+			char *entry;
+			int entry_len;
+
+			env_end = memscan(env_start, '\0', scan_len);
+			LASSERT(env_end >= env_start &&
+				env_end <= env_start + scan_len);
+
+			/* The last entry of this buffer cross the buffer
+			 * boundary, reread it in next cycle. */
+			if (unlikely(env_end - env_start == scan_len)) {
+				/* This entry is too large to fit in buffer */
+				if (unlikely(scan_len == this_len)) {
+					CERROR("Too long env variable.\n");
+					rc = -EINVAL;
+					goto out;
+				}
+				pos -= scan_len;
+				break;
+			}
+
+			entry = env_start;
+			entry_len = env_end - env_start;
+
+			/* Key length + length of '=' */
+			if (entry_len > key_len + 1 &&
+			    !memcmp(entry, key, key_len)) {
+				entry += key_len + 1;
+				entry_len -= key_len + 1;
+				/* The 'value' buffer passed in is too small.*/
+				if (entry_len >= *val_len)
+					GOTO(out, rc = -EOVERFLOW);
+
+				memcpy(value, entry, entry_len);
+				*val_len = entry_len;
+				rc = 0;
+				goto out;
+			}
+
+			scan_len -= (env_end - env_start + 1);
+			env_start = env_end + 1;
+		}
+	}
+	if (rc >= 0)
+		rc = -ENOENT;
+out:
+	if (filp)
+		fput(filp);
+	if (buffer)
+		kfree(buffer);
+	return rc;
+}
+
 /* Get jobid of current process by reading the environment variable
  * stored in between the "env_start" & "env_end" of task struct.
  *
@@ -126,7 +218,7 @@ int lustre_get_jobid(char *jobid)
 		return 0;
 	}
 
-	rc = cfs_get_environ(obd_jobid_var, jobid, &jobid_len);
+	rc = obd_get_environ(obd_jobid_var, jobid, &jobid_len);
 	if (rc) {
 		if (rc == -EOVERFLOW) {
 			/* For the PBS_JOBID and LOADL_STEP_ID keys (which are
@@ -149,6 +241,8 @@ int lustre_get_jobid(char *jobid)
 			       "Get jobid for (%s) failed: rc = %d\n",
 			       obd_jobid_var, rc);
 		}
+	} else {
+		CDEBUG(D_INFO, "Got jobid for (%s) value (%s)\n", obd_jobid_var, jobid);
 	}
 	return rc;
 }
