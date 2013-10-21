@@ -1133,8 +1133,11 @@ int vvp_io_init(const struct lu_env *env, struct cl_object *obj,
 		 *
 		 * it's not accurate if the file is shared by different
 		 * jobs.
+		 *
+		 * Save lookup jobid in first io and cache it forever.
 		 */
-		lustre_get_jobid(lli->lli_jobid);
+		if (lli->lli_jobid[0] == '\0')
+			lustre_get_jobid(lli->lli_jobid);
 	} else if (io->ci_type == CIT_SETATTR) {
 		if (!cl_io_is_trunc(io))
 			io->ci_lockreq = CILR_MANDATORY;
