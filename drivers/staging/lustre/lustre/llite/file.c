@@ -846,6 +846,8 @@ ll_file_io_generic(const struct lu_env *env, struct vvp_io_args *args,
 	struct cl_io	 *io;
 	ssize_t	       result;
 
+	ll_io_set_jobid(env, lli);
+
 restart:
 	io = ccc_env_thread_io(env);
 	ll_io_init(io, file, iot == CIT_WRITE);

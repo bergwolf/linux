@@ -205,6 +205,7 @@ static int ll_page_mkwrite0(struct vm_area_struct *vma, struct page *vmpage,
 	 * while truncate is on-going. */
 	inode = ccc_object_inode(io->ci_obj);
 	lli = ll_i2info(inode);
+	ll_io_set_jobid(env, lli);
 	down_read(&lli->lli_trunc_sem);
 
 	result = cl_io_loop(env, io);
