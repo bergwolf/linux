@@ -968,6 +968,7 @@ struct vvp_thread_info {
 	struct ra_io_arg     vti_ria;
 	struct kiocb	 vti_kiocb;
 	struct ll_cl_context vti_io_ctx;
+	char		     vti_jobid[JOBSTATS_JOBID_SIZE];
 };
 
 static inline struct vvp_thread_info *vvp_env_info(const struct lu_env *env)
@@ -978,6 +979,21 @@ static inline struct vvp_thread_info *vvp_env_info(const struct lu_env *env)
 	info = lu_context_key_get(&env->le_ctx, &vvp_key);
 	LASSERT(info != NULL);
 	return info;
+}
+
+static inline char *vvp_env_jobid(const struct lu_env *env)
+{
+	return vvp_env_info(env)->vti_jobid;
+}
+
+static inline void ll_io_set_jobid(const struct lu_env *env, struct ll_inode_info *lli)
+{
+	char *jobid = vvp_env_jobid(env);
+
+	if (jobid[0] == '\0')
+		lustre_get_jobid(jobid);
+
+	memcpy(lli->lli_jobid, jobid, JOBSTATS_JOBID_SIZE);
 }
 
 static inline struct vvp_io_args *vvp_env_args(const struct lu_env *env,
