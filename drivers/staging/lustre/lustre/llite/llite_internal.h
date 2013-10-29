@@ -124,6 +124,8 @@ enum lli_flags {
 	LLIF_SRVLOCK	    = (1 << 5),
 	/* File data is modified. */
 	LLIF_DATA_MODIFIED      = (1 << 6),
+	/* File is being restored */
+	LLIF_FILE_RESTORING	= (1 << 7),
 };
 
 struct ll_inode_info {
@@ -1578,5 +1580,6 @@ enum {
 
 int ll_layout_conf(struct inode *inode, const struct cl_object_conf *conf);
 int ll_layout_refresh(struct inode *inode, __u32 *gen);
+int ll_layout_restore(struct inode *inode);
 
 #endif /* LLITE_INTERNAL_H */
