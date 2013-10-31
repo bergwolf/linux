@@ -61,7 +61,6 @@ int    cfs_curproc_groups_nr(void);
  */
 
 /* check if task is running in compat mode.*/
-int current_is_32bit(void);
 #define current_pid()		(current->pid)
 #define current_comm()		(current->comm)
 
