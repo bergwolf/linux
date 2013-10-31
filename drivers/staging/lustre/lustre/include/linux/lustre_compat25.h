@@ -171,8 +171,8 @@ static inline int ll_quota_off(struct super_block *sb, int off, int remount)
 #define ll_d_hlist_empty(list) hlist_empty(list)
 #define ll_d_hlist_entry(ptr, type, name) hlist_entry(ptr.first, type, name)
 #define ll_d_hlist_for_each(tmp, i_dentry) hlist_for_each(tmp, i_dentry)
-#define ll_d_hlist_for_each_entry(dentry, p, i_dentry, alias) \
-	p = NULL; hlist_for_each_entry(dentry, i_dentry, alias)
+#define ll_d_hlist_for_each_entry(dentry, i_dentry, alias) \
+	hlist_for_each_entry(dentry, i_dentry, alias)
 
 
 #define bio_hw_segments(q, bio) 0
