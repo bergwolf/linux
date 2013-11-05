@@ -53,6 +53,7 @@
 #include <lustre_req_layout.h>
 #include <lustre_fid.h>
 #include "fid_internal.h"
+#include <md_object.h>
 
 #ifdef LPROCFS
 /*
@@ -67,6 +68,11 @@ lprocfs_fid_write_common(const char *buffer, unsigned long count,
 	int rc;
 
 	LASSERT(range != NULL);
+
+	if (count == 5 && strcmp(buffer, "clear") == 0) {
+		memset(range, 0, sizeof(*range));
+		return 0;
+	}
 
 	rc = sscanf(buffer, "[%llx - %llx]\n",
 		    (long long unsigned *)&tmp.lsr_start,
