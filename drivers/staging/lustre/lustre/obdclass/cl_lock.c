@@ -162,7 +162,7 @@ static void cl_lock_lockdep_release(const struct lu_env *env,
 				    struct cl_lock *lock)
 {
 	cl_lock_counters(env, lock)->ctc_nr_locks_acquired--;
-	lock_release(&lock->dep_map, 0, RETIP);
+	lock_map_release(&lock->dep_map);
 }
 
 #else /* !CONFIG_LOCKDEP */
