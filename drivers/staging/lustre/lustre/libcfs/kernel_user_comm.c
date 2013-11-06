@@ -56,6 +56,8 @@ int libcfs_ukuc_start(lustre_kernelcomm *link, int group)
 {
 	int pfd[2];
 
+	link->lk_rfd = link->lk_wfd = LK_NOFD;
+
 	if (pipe(pfd) < 0)
 		return -errno;
 
@@ -69,9 +71,13 @@ int libcfs_ukuc_start(lustre_kernelcomm *link, int group)
 
 int libcfs_ukuc_stop(lustre_kernelcomm *link)
 {
-	if (link->lk_wfd > 0)
+	int rc;
+
+	if (link->lk_wfd != LK_NOFD)
 		close(link->lk_wfd);
-	return close(link->lk_rfd);
+	rc = close(link->lk_rfd);
+	link->lk_rfd = link->lk_wfd = LK_NOFD;
+	return rc;
 }
 
 #define lhsz sizeof(*kuch)
