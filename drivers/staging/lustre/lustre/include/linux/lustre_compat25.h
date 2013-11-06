@@ -111,11 +111,6 @@ static inline void ll_set_fs_pwd(struct fs_struct *fs, struct vfsmount *mnt,
 #define cfs_bio_io_error(a,b)   bio_io_error((a))
 #define cfs_bio_endio(a,b,c)    bio_endio((a),(c))
 
-#define cfs_fs_pwd(fs)       ((fs)->pwd.dentry)
-#define cfs_fs_mnt(fs)       ((fs)->pwd.mnt)
-#define cfs_path_put(nd)     path_put(&(nd)->path)
-
-
 #ifndef SLAB_DESTROY_BY_RCU
 #define SLAB_DESTROY_BY_RCU 0
 #endif
