@@ -572,6 +572,10 @@ static int __init init_obdclass(void)
 	if (err)
 		return err;
 
+	err = lu_capainfo_init();
+	if (err)
+		return err;
+
 	err = cl_global_init();
 	if (err != 0)
 		return err;
@@ -651,6 +655,7 @@ static void cleanup_obdclass(void)
 	}
 	llog_info_fini();
 	cl_global_fini();
+	lu_capainfo_fini();
 	lu_global_fini();
 
 	obd_cleanup_caches();
