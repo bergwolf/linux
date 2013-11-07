@@ -822,35 +822,38 @@ struct obd_llog_group {
 #define OBD_DEV_BY_DEVNAME      0xffffd0de
 
 struct obd_device {
-	struct obd_type	*obd_type;
-	__u32		   obd_magic;
+	struct obd_type		*obd_type;
+	__u32			 obd_magic;
 
 	/* common and UUID name of this device */
-	char		    obd_name[MAX_OBD_NAME];
-	struct obd_uuid	 obd_uuid;
+	char			 obd_name[MAX_OBD_NAME];
+	struct obd_uuid		 obd_uuid;
+	int			 obd_minor;
+	struct lu_device	*obd_lu_dev;
 
-	struct lu_device       *obd_lu_dev;
-
-	int		     obd_minor;
 	/* bitfield modification is protected by obd_dev_lock */
-	unsigned long obd_attached:1,      /* finished attach */
-		      obd_set_up:1,	/* finished setup */
-		      obd_recovering:1,    /* there are recoverable clients */
-		      obd_abort_recovery:1,/* recovery expired */
-		      obd_version_recov:1, /* obd uses version checking */
-		      obd_replayable:1,    /* recovery is enabled; inform clients */
-		      obd_no_transno:1,    /* no committed-transno notification */
-		      obd_no_recov:1,      /* fail instead of retry messages */
-		      obd_stopping:1,      /* started cleanup */
-		      obd_starting:1,      /* started setup */
-		      obd_force:1,	 /* cleanup with > 0 obd refcount */
-		      obd_fail:1,	  /* cleanup with failover */
-		      obd_async_recov:1,   /* allow asynchronous orphan cleanup */
-		      obd_no_conn:1,       /* deny new connections */
-		      obd_inactive:1,      /* device active/inactive
-					   * (for /proc/status only!!) */
-		      obd_no_ir:1,	 /* no imperative recovery. */
-		      obd_process_conf:1;  /* device is processing mgs config */
+	unsigned long
+		obd_attached:1,		/* finished attach */
+		obd_set_up:1,		/* finished setup */
+		obd_recovering:1,	/* there are recoverable clients */
+		obd_abort_recovery:1,	/* recovery expired */
+		obd_version_recov:1,	/* obd uses version checking */
+		obd_replayable:1,	/* recovery is enabled;
+					 * inform clients */
+		obd_no_transno:1,	/* no committed-transno notification */
+		obd_no_recov:1,		/* fail instead of retry messages */
+		obd_stopping:1,		/* started cleanup */
+		obd_starting:1,		/* started setup */
+		obd_force:1,		/* cleanup with > 0 obd refcount */
+		obd_fail:1,		/* cleanup with failover */
+		obd_async_recov:1,	/* allow asynchronous orphan cleanup */
+		obd_no_conn:1,		/* deny new connections */
+		obd_inactive:1,		/* device active/inactive
+					 * (for /proc/status only!!) */
+		obd_no_ir:1,		/* no imperative recovery. */
+		obd_process_conf:1,	/* device is processing mgs config */
+		obd_uses_nid_stats:1;	/* maintain per-client OBD stats */
+
 	/* use separate field as it is set in interrupt to don't mess with
 	 * protection of other bits using _bh lock */
 	unsigned long obd_recovery_expired:1;
@@ -862,7 +865,6 @@ struct obd_device {
 	struct cfs_hash	     *obd_nid_stats_hash;
 	struct list_head	      obd_nid_stats;
 	atomic_t	    obd_refcount;
-	wait_queue_head_t	     obd_refcount_waitq;
 	struct list_head	      obd_exports;
 	struct list_head	      obd_unlinked_exports;
 	struct list_head	      obd_delayed_exports;
@@ -916,7 +918,6 @@ struct obd_device {
 	struct list_head		       obd_req_replay_queue;
 	struct list_head		       obd_lock_replay_queue;
 	struct list_head		       obd_final_req_queue;
-	int			      obd_recovery_stage;
 
 	union {
 		struct client_obd cli;
@@ -928,8 +929,8 @@ struct obd_device {
 	unsigned int	   obd_cntr_base;
 	struct lprocfs_stats  *obd_stats;
 
-	unsigned int	   md_cntr_base;
-	struct lprocfs_stats  *md_stats;
+	unsigned int	       obd_md_cntr_base;
+	struct lprocfs_stats  *obd_md_stats;
 
 	struct proc_dir_entry  *obd_proc_entry;
 	void		  *obd_proc_private; /* type private PDEs */
@@ -1329,43 +1330,52 @@ struct md_open_data {
 struct lookup_intent;
 
 struct md_ops {
-	int (*m_getstatus)(struct obd_export *, struct lu_fid *,
-			   struct obd_capa **);
-	int (*m_null_inode)(struct obd_export *, const struct lu_fid *);
-	int (*m_find_cbdata)(struct obd_export *, const struct lu_fid *,
-			     ldlm_iterator_t, void *);
+	/* Every operation from MD_STATS_FIRST_OP up to and including
+	 * MD_STATS_LAST_OP will be counted by EXP_MD_OP_INCREMENT()
+	 * and will appear in /proc/fs/lustre/{lmv,mdc}/.../md_stats.
+	 * Operations after MD_STATS_LAST_OP are excluded from stats.
+	 * There are a few reasons for doing this: we prune the 17
+	 * counters which will be of minimal use in understanding
+	 * metadata utilization, we save memory by allocating 15
+	 * instead of 32 counters, we save cycles by not counting.
+	 *
+	 * MD_STATS_FIRST_OP must be the first member of md_ops.
+	 */
+#define MD_STATS_FIRST_OP m_close
 	int (*m_close)(struct obd_export *, struct md_op_data *,
 		       struct md_open_data *, struct ptlrpc_request **);
+
 	int (*m_create)(struct obd_export *, struct md_op_data *,
 			const void *, int, int, __u32, __u32, cfs_cap_t,
 			__u64, struct ptlrpc_request **);
-	int (*m_done_writing)(struct obd_export *, struct md_op_data  *,
-			      struct md_open_data *);
+
 	int (*m_enqueue)(struct obd_export *, struct ldlm_enqueue_info *,
 			 struct lookup_intent *, struct md_op_data *,
 			 struct lustre_handle *, void *, int,
 			 struct ptlrpc_request **, __u64);
+
 	int (*m_getattr)(struct obd_export *, struct md_op_data *,
 			 struct ptlrpc_request **);
-	int (*m_getattr_name)(struct obd_export *, struct md_op_data *,
-			      struct ptlrpc_request **);
+
 	int (*m_intent_lock)(struct obd_export *, struct md_op_data *,
 			     void *, int, struct lookup_intent *, int,
 			     struct ptlrpc_request **,
 			     ldlm_blocking_callback, __u64);
+
 	int (*m_link)(struct obd_export *, struct md_op_data *,
 		      struct ptlrpc_request **);
+
 	int (*m_rename)(struct obd_export *, struct md_op_data *,
 			const char *, int, const char *, int,
 			struct ptlrpc_request **);
-	int (*m_is_subdir)(struct obd_export *, const struct lu_fid *,
-			   const struct lu_fid *,
-			   struct ptlrpc_request **);
+
 	int (*m_setattr)(struct obd_export *, struct md_op_data *, void *,
 			 int , void *, int, struct ptlrpc_request **,
 			 struct md_open_data **mod);
-	int (*m_sync)(struct obd_export *, const struct lu_fid *,
-		      struct obd_capa *, struct ptlrpc_request **);
+
+	int (*m_fsync)(struct obd_export *, const struct lu_fid *,
+		       struct obd_capa *, struct ptlrpc_request **);
+
 	int (*m_readpage)(struct obd_export *, struct md_op_data *,
 			  struct page **, struct ptlrpc_request **);
 
@@ -1382,6 +1392,32 @@ struct md_ops {
 			  const char *, int, int, int,
 			  struct ptlrpc_request **);
 
+	int (*m_intent_getattr_async)(struct obd_export *,
+				      struct md_enqueue_info *,
+				      struct ldlm_enqueue_info *);
+
+	int (*m_revalidate_lock)(struct obd_export *, struct lookup_intent *,
+				 struct lu_fid *, __u64 *bits);
+#define MD_STATS_LAST_OP m_revalidate_lock
+
+	int (*m_getstatus)(struct obd_export *, struct lu_fid *,
+			   struct obd_capa **);
+
+	int (*m_null_inode)(struct obd_export *, const struct lu_fid *);
+
+	int (*m_find_cbdata)(struct obd_export *, const struct lu_fid *,
+			     ldlm_iterator_t, void *);
+
+	int (*m_done_writing)(struct obd_export *, struct md_op_data  *,
+			      struct md_open_data *);
+
+	int (*m_getattr_name)(struct obd_export *, struct md_op_data *,
+			      struct ptlrpc_request **);
+
+	int (*m_is_subdir)(struct obd_export *, const struct lu_fid *,
+			   const struct lu_fid *,
+			   struct ptlrpc_request **);
+
 	int (*m_init_ea_size)(struct obd_export *, int, int, int);
 
 	int (*m_get_lustre_md)(struct obd_export *, struct ptlrpc_request *,
@@ -1393,8 +1429,10 @@ struct md_ops {
 	int (*m_set_open_replay_data)(struct obd_export *,
 				      struct obd_client_handle *,
 				      struct ptlrpc_request *);
+
 	int (*m_clear_open_replay_data)(struct obd_export *,
 					struct obd_client_handle *);
+
 	int (*m_set_lock_data)(struct obd_export *, __u64 *, void *, __u64 *);
 
 	ldlm_mode_t (*m_lock_match)(struct obd_export *, __u64,
@@ -1405,27 +1443,16 @@ struct md_ops {
 	int (*m_cancel_unused)(struct obd_export *, const struct lu_fid *,
 			       ldlm_policy_data_t *, ldlm_mode_t,
 			       ldlm_cancel_flags_t flags, void *opaque);
+
 	int (*m_renew_capa)(struct obd_export *, struct obd_capa *oc,
 			    renew_capa_cb_t cb);
+
 	int (*m_unpack_capa)(struct obd_export *, struct ptlrpc_request *,
 			     const struct req_msg_field *, struct obd_capa **);
 
 	int (*m_get_remote_perm)(struct obd_export *, const struct lu_fid *,
 				 struct obd_capa *, __u32,
 				 struct ptlrpc_request **);
-
-	int (*m_intent_getattr_async)(struct obd_export *,
-				      struct md_enqueue_info *,
-				      struct ldlm_enqueue_info *);
-
-	int (*m_revalidate_lock)(struct obd_export *, struct lookup_intent *,
-				 struct lu_fid *, __u64 *bits);
-
-	/*
-	 * NOTE: If adding ops, add another LPROCFS_MD_OP_INIT() line to
-	 * lprocfs_alloc_md_stats() in obdclass/lprocfs_status.c. Also, add a
-	 * wrapper function in include/linux/obd_class.h.
-	 */
 };
 
 struct lsm_operations {
