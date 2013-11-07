@@ -451,7 +451,6 @@ out:
 static inline void enc_pools_wakeup(void)
 {
 	LASSERT(spin_is_locked(&page_pools.epp_lock));
-	LASSERT(page_pools.epp_waitqlen >= 0);
 
 	if (unlikely(page_pools.epp_waitqlen)) {
 		LASSERT(waitqueue_active(&page_pools.epp_waitq));
