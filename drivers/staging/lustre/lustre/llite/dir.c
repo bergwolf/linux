@@ -597,23 +597,30 @@ static int ll_readdir(struct file *filp, struct dir_context *ctx)
 	struct inode		*inode	= filp->f_dentry->d_inode;
 	struct ll_file_data	*lfd	= LUSTRE_FPRIVATE(filp);
 	struct ll_sb_info	*sbi	= ll_i2sbi(inode);
+	__u64			pos;
 	int			hash64	= sbi->ll_flags & LL_SBI_64BIT_HASH;
 	int			api32	= ll_need_32bit_api(sbi);
 	int			rc;
 
-	CDEBUG(D_VFSTRACE, "VFS Op:inode=%lu/%u(%p) pos %lu/%llu "
-	       " 32bit_api %d\n", inode->i_ino, inode->i_generation,
-	       inode, (unsigned long)lfd->lfd_pos, i_size_read(inode), api32);
+	if (lfd != NULL)
+		pos = lfd->lfd_pos;
+	else
+		pos = 0;
 
-	if (lfd->lfd_pos == MDS_DIR_END_OFF)
+	CDEBUG(D_VFSTRACE, "VFS Op:inode=%lu/%u(%p) pos %llu/%llu "
+	       " 32bit_api %d\n", inode->i_ino, inode->i_generation,
+	       inode, pos, i_size_read(inode), api32);
+
+	if (pos == MDS_DIR_END_OFF)
 		/*
 		 * end-of-file.
 		 */
 		GOTO(out, rc = 0);
 
-	ctx->pos = lfd->lfd_pos;
+	ctx->pos = pos;
 	rc = ll_dir_read(inode, ctx);
-	lfd->lfd_pos = ctx->pos;
+	if (lfd != NULL)
+		lfd->lfd_pos = ctx->pos;
 	if (ctx->pos == MDS_DIR_END_OFF) {
 		if (api32)
 			ctx->pos = LL_DIR_END_OFF_32BIT;
