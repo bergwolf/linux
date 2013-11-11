@@ -244,7 +244,7 @@ static int lmv_connect(const struct lu_env *env,
 	 * and MDC stuff will be called directly, for instance while reading
 	 * ../mdc/../kbytesfree procfs file, etc.
 	 */
-	if (data->ocd_connect_flags & OBD_CONNECT_REAL)
+	if (data != NULL && (data->ocd_connect_flags & OBD_CONNECT_REAL))
 		rc = lmv_check_connect(obd);
 
 	if (rc && lmv_proc_dir) {
