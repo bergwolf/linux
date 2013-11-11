@@ -727,9 +727,9 @@ static void ptlrpcd_fini(void)
 
 static int ptlrpcd_init(void)
 {
-	int nthreads = num_online_cpus();
-	char name[16];
-	int size, i = -1, j, rc = 0;
+	int	nthreads = num_online_cpus();
+	char	name[16];
+	int	size, i = -1, j, rc = 0;
 
 	if (max_ptlrpcds > 0 && max_ptlrpcds < nthreads)
 		nthreads = max_ptlrpcds;
@@ -786,7 +786,7 @@ out:
 		ptlrpcds = NULL;
 	}
 
-	return 0;
+	return rc;
 }
 
 int ptlrpcd_addref(void)
@@ -794,8 +794,11 @@ int ptlrpcd_addref(void)
 	int rc = 0;
 
 	mutex_lock(&ptlrpcd_mutex);
-	if (++ptlrpcd_users == 1)
+	if (++ptlrpcd_users == 1) {
 		rc = ptlrpcd_init();
+		if (rc < 0)
+			ptlrpcd_users--;
+	}
 	mutex_unlock(&ptlrpcd_mutex);
 	return rc;
 }
