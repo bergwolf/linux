@@ -106,49 +106,6 @@ static inline void ll_set_fs_pwd(struct fs_struct *fs, struct vfsmount *mnt,
 #define SLAB_DESTROY_BY_RCU 0
 #endif
 
-
-
-static inline int
-ll_quota_on(struct super_block *sb, int off, int ver, char *name, int remount)
-{
-	int rc;
-
-	if (sb->s_qcop->quota_on) {
-		struct path path;
-
-		rc = kern_path(name, LOOKUP_FOLLOW, &path);
-		if (!rc)
-			return rc;
-		rc = sb->s_qcop->quota_on(sb, off, ver
-					    , &path
-					   );
-		path_put(&path);
-		return rc;
-	}
-	else
-		return -ENOSYS;
-}
-
-static inline int ll_quota_off(struct super_block *sb, int off, int remount)
-{
-	if (sb->s_qcop->quota_off) {
-		return sb->s_qcop->quota_off(sb, off
-					    );
-	}
-	else
-		return -ENOSYS;
-}
-
-
-# define ll_vfs_dq_init	     dquot_initialize
-# define ll_vfs_dq_drop	     dquot_drop
-# define ll_vfs_dq_transfer	 dquot_transfer
-# define ll_vfs_dq_off(sb, remount) dquot_suspend(sb, -1)
-
-
-
-
-
 #define queue_max_phys_segments(rq)       queue_max_segments(rq)
 #define queue_max_hw_segments(rq)	 queue_max_segments(rq)
 
