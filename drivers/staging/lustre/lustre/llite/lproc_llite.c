@@ -393,8 +393,8 @@ static ssize_t ll_max_cached_mb_seq_write(struct file *file, const char *buffer,
 		return -ERANGE;
 	}
 
-	if (sbi->ll_dt_exp == NULL)
-		return -ENODEV;
+	if (sbi->ll_dt_exp == NULL) /* being initialized */
+		GOTO(out, rc = 0);
 
 	spin_lock(&sbi->ll_lock);
 	diff = pages_number - cache->ccc_lru_max;
