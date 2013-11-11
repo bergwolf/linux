@@ -2091,6 +2091,7 @@ void ldlm_cancel_locks_for_export(struct obd_export *exp)
 	cfs_hash_for_each_empty(exp->exp_lock_hash,
 				ldlm_cancel_locks_for_export_cb, &ecl);
 }
+EXPORT_SYMBOL(ldlm_reprocess_all);
 
 /**
  * Downgrade an exclusive lock.
