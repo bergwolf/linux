@@ -57,14 +57,18 @@
 
 #ifdef LPROCFS
 /*
- * Note: this function is only used for testing, it is no safe for production
- * use.
+ * Reduce the SEQ range allocated to a node to a strict subset of the range
+ * currently-allocated SEQ range.  If the specified range is "clear", then
+ * drop all allocated sequences and request a new one from the master.
+ *
+ * Note: this function should only be used for testing, it is not necessarily
+ * safe for production use.
  */
 static int
 lprocfs_fid_write_common(const char *buffer, unsigned long count,
 			 struct lu_seq_range *range)
 {
-	struct lu_seq_range tmp;
+	struct lu_seq_range tmp = { 0, };
 	int rc;
 
 	LASSERT(range != NULL);
@@ -74,10 +78,12 @@ lprocfs_fid_write_common(const char *buffer, unsigned long count,
 		return 0;
 	}
 
+	/* of the form "[0x0000000240000400 - 0x000000028000400]" */
 	rc = sscanf(buffer, "[%llx - %llx]\n",
 		    (long long unsigned *)&tmp.lsr_start,
 		    (long long unsigned *)&tmp.lsr_end);
-	if (rc != 2 || !range_is_sane(&tmp) || range_is_zero(&tmp))
+	if (!range_is_sane(&tmp) || range_is_zero(&tmp) ||
+	    tmp.lsr_start < range->lsr_start || tmp.lsr_end > range->lsr_end)
 		return -EINVAL;
 	*range = tmp;
 	return 0;
