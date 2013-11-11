@@ -117,10 +117,6 @@ static inline void ll_set_fs_pwd(struct fs_struct *fs, struct vfsmount *mnt,
 #define ll_d_hlist_for_each_entry(dentry, i_dentry, alias) \
 	hlist_for_each_entry(dentry, i_dentry, alias)
 
-
-#define bio_hw_segments(q, bio) 0
-
-
 #define ll_pagevec_init(pv, cold)       do {} while (0)
 #define ll_pagevec_add(pv, pg)	  (0)
 #define ll_pagevec_lru_add_file(pv)     do {} while (0)
