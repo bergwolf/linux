@@ -1171,6 +1171,102 @@ static ssize_t ll_rw_extents_stats_seq_write(struct file *file, const char *buf,
 
 LPROC_SEQ_FOPS(ll_rw_extents_stats);
 
+
+static int ll_rw_offset_stats_seq_show(struct seq_file *seq, void *v)
+{
+	struct timeval now;
+	struct ll_sb_info *sbi = seq->private;
+	struct ll_rw_process_info *offset = sbi->ll_rw_offset_info;
+	struct ll_rw_process_info *process = sbi->ll_rw_process_info;
+	int i;
+
+	do_gettimeofday(&now);
+
+	if (!sbi->ll_rw_stats_on) {
+		seq_printf(seq, "disabled\n"
+				"write anything in this file to activate, "
+				"then 0 or \"[D/d]isabled\" to deactivate\n");
+		return 0;
+	}
+	spin_lock(&sbi->ll_process_lock);
+
+	seq_printf(seq, "snapshot_time:	 %lu.%lu (secs.usecs)\n",
+		   now.tv_sec, (unsigned long)now.tv_usec);
+	seq_printf(seq, "%3s %10s %14s %14s %17s %17s %14s\n",
+		   "R/W", "PID", "RANGE START", "RANGE END",
+		   "SMALLEST EXTENT", "LARGEST EXTENT", "OFFSET");
+	/* We stored the discontiguous offsets here; print them first */
+	for(i = 0; i < LL_OFFSET_HIST_MAX; i++) {
+		if (offset[i].rw_pid != 0)
+			seq_printf(seq,
+				   "%3c %10d %14Lu %14Lu %17lu %17lu %14Lu",
+				   offset[i].rw_op == READ ? 'R' : 'W',
+				   offset[i].rw_pid,
+				   offset[i].rw_range_start,
+				   offset[i].rw_range_end,
+				   (unsigned long)offset[i].rw_smallest_extent,
+				   (unsigned long)offset[i].rw_largest_extent,
+				   offset[i].rw_offset);
+	}
+	/* Then print the current offsets for each process */
+	for(i = 0; i < LL_PROCESS_HIST_MAX; i++) {
+		if (process[i].rw_pid != 0)
+			seq_printf(seq,
+				   "%3c %10d %14Lu %14Lu %17lu %17lu %14Lu",
+				   process[i].rw_op == READ ? 'R' : 'W',
+				   process[i].rw_pid,
+				   process[i].rw_range_start,
+				   process[i].rw_last_file_pos,
+				   (unsigned long)process[i].rw_smallest_extent,
+				   (unsigned long)process[i].rw_largest_extent,
+				   process[i].rw_offset);
+	}
+	spin_unlock(&sbi->ll_process_lock);
+
+	return 0;
+}
+
+static ssize_t ll_rw_offset_stats_seq_write(struct file *file, const char *buf,
+				       size_t len, loff_t *off)
+{
+	struct seq_file *seq = file->private_data;
+	struct ll_sb_info *sbi = seq->private;
+	struct ll_rw_process_info *process_info = sbi->ll_rw_process_info;
+	struct ll_rw_process_info *offset_info = sbi->ll_rw_offset_info;
+	int value = 1, rc = 0;
+
+	rc = lprocfs_write_helper(buf, len, &value);
+
+	if (rc < 0 && (strcmp(buf, "disabled") == 0 ||
+			   strcmp(buf, "Disabled") == 0))
+		value = 0;
+
+	if (value == 0)
+		sbi->ll_rw_stats_on = 0;
+	else
+		sbi->ll_rw_stats_on = 1;
+
+	spin_lock(&sbi->ll_process_lock);
+	sbi->ll_offset_process_count = 0;
+	sbi->ll_rw_offset_entry_count = 0;
+	memset(process_info, 0, sizeof(struct ll_rw_process_info) *
+	       LL_PROCESS_HIST_MAX);
+	memset(offset_info, 0, sizeof(struct ll_rw_process_info) *
+	       LL_OFFSET_HIST_MAX);
+	spin_unlock(&sbi->ll_process_lock);
+
+	return len;
+}
+
+LPROC_SEQ_FOPS(ll_rw_offset_stats);
+
+void lprocfs_llite_init_vars(struct lprocfs_static_vars *lvars)
+{
+    lvars->module_vars  = NULL;
+    lvars->obd_vars     = lprocfs_llite_obd_vars;
+}
+#endif /* LPROCFS */
+
 void ll_rw_stats_tally(struct ll_sb_info *sbi, pid_t pid,
 		       struct ll_file_data *file, loff_t pos,
 		       size_t count, int rw)
@@ -1273,98 +1369,3 @@ void ll_rw_stats_tally(struct ll_sb_info *sbi, pid_t pid,
 	process[*process_count].rw_last_file = file;
 	spin_unlock(&sbi->ll_process_lock);
 }
-
-static int ll_rw_offset_stats_seq_show(struct seq_file *seq, void *v)
-{
-	struct timeval now;
-	struct ll_sb_info *sbi = seq->private;
-	struct ll_rw_process_info *offset = sbi->ll_rw_offset_info;
-	struct ll_rw_process_info *process = sbi->ll_rw_process_info;
-	int i;
-
-	do_gettimeofday(&now);
-
-	if (!sbi->ll_rw_stats_on) {
-		seq_printf(seq, "disabled\n"
-				"write anything in this file to activate, "
-				"then 0 or \"[D/d]isabled\" to deactivate\n");
-		return 0;
-	}
-	spin_lock(&sbi->ll_process_lock);
-
-	seq_printf(seq, "snapshot_time:	 %lu.%lu (secs.usecs)\n",
-		   now.tv_sec, (unsigned long)now.tv_usec);
-	seq_printf(seq, "%3s %10s %14s %14s %17s %17s %14s\n",
-		   "R/W", "PID", "RANGE START", "RANGE END",
-		   "SMALLEST EXTENT", "LARGEST EXTENT", "OFFSET");
-	/* We stored the discontiguous offsets here; print them first */
-	for(i = 0; i < LL_OFFSET_HIST_MAX; i++) {
-		if (offset[i].rw_pid != 0)
-			seq_printf(seq,
-				   "%3c %10d %14Lu %14Lu %17lu %17lu %14Lu",
-				   offset[i].rw_op == READ ? 'R' : 'W',
-				   offset[i].rw_pid,
-				   offset[i].rw_range_start,
-				   offset[i].rw_range_end,
-				   (unsigned long)offset[i].rw_smallest_extent,
-				   (unsigned long)offset[i].rw_largest_extent,
-				   offset[i].rw_offset);
-	}
-	/* Then print the current offsets for each process */
-	for(i = 0; i < LL_PROCESS_HIST_MAX; i++) {
-		if (process[i].rw_pid != 0)
-			seq_printf(seq,
-				   "%3c %10d %14Lu %14Lu %17lu %17lu %14Lu",
-				   process[i].rw_op == READ ? 'R' : 'W',
-				   process[i].rw_pid,
-				   process[i].rw_range_start,
-				   process[i].rw_last_file_pos,
-				   (unsigned long)process[i].rw_smallest_extent,
-				   (unsigned long)process[i].rw_largest_extent,
-				   process[i].rw_offset);
-	}
-	spin_unlock(&sbi->ll_process_lock);
-
-	return 0;
-}
-
-static ssize_t ll_rw_offset_stats_seq_write(struct file *file, const char *buf,
-				       size_t len, loff_t *off)
-{
-	struct seq_file *seq = file->private_data;
-	struct ll_sb_info *sbi = seq->private;
-	struct ll_rw_process_info *process_info = sbi->ll_rw_process_info;
-	struct ll_rw_process_info *offset_info = sbi->ll_rw_offset_info;
-	int value = 1, rc = 0;
-
-	rc = lprocfs_write_helper(buf, len, &value);
-
-	if (rc < 0 && (strcmp(buf, "disabled") == 0 ||
-			   strcmp(buf, "Disabled") == 0))
-		value = 0;
-
-	if (value == 0)
-		sbi->ll_rw_stats_on = 0;
-	else
-		sbi->ll_rw_stats_on = 1;
-
-	spin_lock(&sbi->ll_process_lock);
-	sbi->ll_offset_process_count = 0;
-	sbi->ll_rw_offset_entry_count = 0;
-	memset(process_info, 0, sizeof(struct ll_rw_process_info) *
-	       LL_PROCESS_HIST_MAX);
-	memset(offset_info, 0, sizeof(struct ll_rw_process_info) *
-	       LL_OFFSET_HIST_MAX);
-	spin_unlock(&sbi->ll_process_lock);
-
-	return len;
-}
-
-LPROC_SEQ_FOPS(ll_rw_offset_stats);
-
-void lprocfs_llite_init_vars(struct lprocfs_static_vars *lvars)
-{
-    lvars->module_vars  = NULL;
-    lvars->obd_vars     = lprocfs_llite_obd_vars;
-}
-#endif /* LPROCFS */
