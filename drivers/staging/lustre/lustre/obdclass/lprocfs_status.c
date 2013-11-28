@@ -46,8 +46,6 @@
 #include <lustre/lustre_idl.h>
 #include <linux/seq_file.h>
 
-#if defined(LPROCFS)
-
 static int lprocfs_no_percpu_stats = 0;
 module_param(lprocfs_no_percpu_stats, int, 0644);
 MODULE_PARM_DESC(lprocfs_no_percpu_stats, "Do not alloc percpu data for lprocfs stats");
@@ -1982,5 +1980,3 @@ int lprocfs_obd_rd_max_pages_per_rpc(struct seq_file *m, void *data)
 	return rc;
 }
 EXPORT_SYMBOL(lprocfs_obd_rd_max_pages_per_rpc);
-
-#endif /* LPROCFS*/
