@@ -59,21 +59,6 @@ MODULE_PARM_DESC(max_user_congthresh,
 /** Congestion starts at 75% of maximum */
 #define FUSE_DEFAULT_CONGESTION_THRESHOLD (FUSE_DEFAULT_MAX_BACKGROUND * 3 / 4)
 
-struct fuse_mount_data {
-	int fd;
-	unsigned rootmode;
-	kuid_t user_id;
-	kgid_t group_id;
-	unsigned fd_present:1;
-	unsigned rootmode_present:1;
-	unsigned user_id_present:1;
-	unsigned group_id_present:1;
-	unsigned default_permissions:1;
-	unsigned allow_other:1;
-	unsigned max_read;
-	unsigned blksize;
-};
-
 struct fuse_forget_link *fuse_alloc_forget(void)
 {
 	return kzalloc(sizeof(struct fuse_forget_link), GFP_KERNEL);
@@ -479,7 +464,7 @@ static int fuse_match_uint(substring_t *s, unsigned int *res)
 	return err;
 }
 
-static int parse_fuse_opt(char *opt, struct fuse_mount_data *d, int is_bdev,
+int parse_fuse_opt(char *opt, struct fuse_mount_data *d, int is_bdev,
 			  struct user_namespace *user_ns)
 {
 	char *p;
@@ -556,12 +541,13 @@ static int parse_fuse_opt(char *opt, struct fuse_mount_data *d, int is_bdev,
 		}
 	}
 
-	if (!d->fd_present || !d->rootmode_present ||
-	    !d->user_id_present || !d->group_id_present)
+	if (!d->rootmode_present || !d->user_id_present ||
+	    !d->group_id_present)
 		return 0;
 
 	return 1;
 }
+EXPORT_SYMBOL_GPL(parse_fuse_opt);
 
 static int fuse_show_options(struct seq_file *m, struct dentry *root)
 {
@@ -1072,13 +1058,13 @@ void fuse_dev_free(struct fuse_dev *fud)
 }
 EXPORT_SYMBOL_GPL(fuse_dev_free);
 
-static int fuse_fill_super(struct super_block *sb, void *data, int silent)
+int fuse_fill_super_common(struct super_block *sb,
+			   struct fuse_mount_data *mount_data,
+			   void **fudptr)
 {
 	struct fuse_dev *fud;
 	struct fuse_conn *fc;
 	struct inode *root;
-	struct fuse_mount_data d;
-	struct file *file;
 	struct dentry *root_dentry;
 	struct fuse_req *init_req;
 	int err;
@@ -1090,13 +1076,10 @@ static int fuse_fill_super(struct super_block *sb, void *data, int silent)
 
 	sb->s_flags &= ~(SB_NOSEC | SB_I_VERSION);
 
-	if (!parse_fuse_opt(data, &d, is_bdev, sb->s_user_ns))
-		goto err;
-
 	if (is_bdev) {
 #ifdef CONFIG_BLOCK
 		err = -EINVAL;
-		if (!sb_set_blocksize(sb, d.blksize))
+		if (!sb_set_blocksize(sb, mount_data->blksize))
 			goto err;
 #endif
 	} else {
@@ -1113,19 +1096,6 @@ static int fuse_fill_super(struct super_block *sb, void *data, int silent)
 	if (sb->s_user_ns != &init_user_ns)
 		sb->s_iflags |= SB_I_UNTRUSTED_MOUNTER;
 
-	file = fget(d.fd);
-	err = -EINVAL;
-	if (!file)
-		goto err;
-
-	/*
-	 * Require mount to happen from the same user namespace which
-	 * opened /dev/fuse to prevent potential attacks.
-	 */
-	if (file->f_op != &fuse_dev_operations ||
-	    file->f_cred->user_ns != sb->s_user_ns)
-		goto err_fput;
-
 	/*
 	 * If we are not in the initial user namespace posix
 	 * acls must be translated.
@@ -1136,7 +1106,7 @@ static int fuse_fill_super(struct super_block *sb, void *data, int silent)
 	fc = kmalloc(sizeof(*fc), GFP_KERNEL);
 	err = -ENOMEM;
 	if (!fc)
-		goto err_fput;
+		goto err;
 
 	fuse_conn_init(fc, sb->s_user_ns);
 	fc->release = fuse_free_conn;
@@ -1156,18 +1126,18 @@ static int fuse_fill_super(struct super_block *sb, void *data, int silent)
 		fc->dont_mask = 1;
 	sb->s_flags |= SB_POSIXACL;
 
-	fc->default_permissions = d.default_permissions;
-	fc->allow_other = d.allow_other;
-	fc->user_id = d.user_id;
-	fc->group_id = d.group_id;
-	fc->max_read = max_t(unsigned, 4096, d.max_read);
+	fc->default_permissions = mount_data->default_permissions;
+	fc->allow_other = mount_data->allow_other;
+	fc->user_id = mount_data->user_id;
+	fc->group_id = mount_data->group_id;
+	fc->max_read = max_t(unsigned, 4096, mount_data->max_read);
 	fc->max_pages = FUSE_DEFAULT_MAX_PAGES_PER_REQ;
 
 	/* Used by get_root_inode() */
 	sb->s_fs_info = fc;
 
 	err = -ENOMEM;
-	root = fuse_get_root_inode(sb, d.rootmode);
+	root = fuse_get_root_inode(sb, mount_data->rootmode);
 	sb->s_d_op = &fuse_root_dentry_operations;
 	root_dentry = d_make_root(root);
 	if (!root_dentry)
@@ -1188,7 +1158,7 @@ static int fuse_fill_super(struct super_block *sb, void *data, int silent)
 
 	mutex_lock(&fuse_mutex);
 	err = -EINVAL;
-	if (file->private_data)
+	if (*fudptr)
 		goto err_unlock;
 
 	err = fuse_ctl_add_conn(fc);
@@ -1197,13 +1167,12 @@ static int fuse_fill_super(struct super_block *sb, void *data, int silent)
 
 	list_add_tail(&fc->entry, &fuse_conn_list);
 	sb->s_root = root_dentry;
-	file->private_data = fud;
+	*fudptr = fud;
 	/*
 	 * mutex_unlock() provides the necessary memory barrier for
-	 * file->private_data to be visible on all CPUs after this
+	 * *fudptr to be visible on all CPUs after this
 	 */
 	mutex_unlock(&fuse_mutex);
-	fput(file);
 
 	fuse_send_init(fc, init_req);
 
@@ -1220,9 +1189,40 @@ static int fuse_fill_super(struct super_block *sb, void *data, int silent)
  err_put_conn:
 	fuse_conn_put(fc);
 	sb->s_fs_info = NULL;
- err_fput:
-	fput(file);
  err:
+	return err;
+}
+EXPORT_SYMBOL_GPL(fuse_fill_super_common);
+
+static int fuse_fill_super(struct super_block *sb, void *data, int silent)
+{
+	struct fuse_mount_data d;
+	struct file *file;
+	int is_bdev = sb->s_bdev != NULL;
+	int err;
+
+	err = -EINVAL;
+	if (!parse_fuse_opt(data, &d, is_bdev, sb->s_user_ns))
+		goto err;
+	if (!d.fd_present)
+		goto err;
+
+	file = fget(d.fd);
+	if (!file)
+		goto err;
+
+	/*
+	 * Require mount to happen from the same user namespace which
+	 * opened /dev/fuse to prevent potential attacks.
+	 */
+	if ((file->f_op != &fuse_dev_operations) ||
+	    (file->f_cred->user_ns != sb->s_user_ns))
+		goto err_fput;
+
+	err = fuse_fill_super_common(sb, &d, &file->private_data);
+err_fput:
+	fput(file);
+err:
 	return err;
 }
 
