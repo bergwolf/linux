@@ -1198,12 +1198,11 @@ static int fuse_fill_super(struct super_block *sb, void *data, int silent)
 	list_add_tail(&fc->entry, &fuse_conn_list);
 	sb->s_root = root_dentry;
 	file->private_data = fud;
-	mutex_unlock(&fuse_mutex);
 	/*
-	 * atomic_dec_and_test() in fput() provides the necessary
-	 * memory barrier for file->private_data to be visible on all
-	 * CPUs after this
+	 * mutex_unlock() provides the necessary memory barrier for
+	 * file->private_data to be visible on all CPUs after this
 	 */
+	mutex_unlock(&fuse_mutex);
 	fput(file);
 
 	fuse_send_init(fc, init_req);
