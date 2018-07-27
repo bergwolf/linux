@@ -6,11 +6,17 @@
 
 #include <linux/fs.h>
 #include <linux/dax.h>
+#include <linux/pci.h>
 #include <linux/pfn_t.h>
 #include <linux/module.h>
 #include <linux/virtio.h>
 #include <linux/virtio_fs.h>
 #include "fuse_i.h"
+
+enum {
+	/* PCI BAR number of the virtio-fs DAX window */
+	VIRTIO_FS_WINDOW_BAR = 2,
+};
 
 /* List of virtio-fs device instances and a lock for the list */
 static DEFINE_MUTEX(virtio_fs_mutex);
@@ -24,6 +30,18 @@ struct virtio_fs_vq {
 	char name[24];
 } ____cacheline_aligned_in_smp;
 
+/* State needed for devm_memremap_pages().  This API is called on the
+ * underlying pci_dev instead of struct virtio_fs (layering violation).  Since
+ * the memremap release function only gets called when the pci_dev is released,
+ * keep the associated state separate from struct virtio_fs (it has a different
+ * lifecycle from pci_dev).
+ */
+struct virtio_fs_memremap_info {
+	struct dev_pagemap pgmap;
+	struct percpu_ref ref;
+	struct completion completion;
+};
+
 /* A virtio-fs device instance */
 struct virtio_fs {
 	struct list_head list;    /* on virtio_fs_instances */
@@ -36,6 +54,7 @@ struct virtio_fs {
 	/* DAX memory window where file contents are mapped */
 	void *window_kaddr;
 	phys_addr_t window_phys_addr;
+	size_t window_len;
 };
 
 static inline struct virtio_fs_vq *vq_to_fsvq(struct virtqueue *vq)
@@ -395,6 +414,127 @@ static const struct dax_operations virtio_fs_dax_ops = {
 	.copy_to_iter = virtio_fs_copy_to_iter,
 };
 
+static void virtio_fs_percpu_release(struct percpu_ref *ref)
+{
+	struct virtio_fs_memremap_info *mi =
+		container_of(ref, struct virtio_fs_memremap_info, ref);
+
+	complete(&mi->completion);
+}
+
+static void virtio_fs_percpu_exit(void *data)
+{
+	struct virtio_fs_memremap_info *mi = data;
+
+	wait_for_completion(&mi->completion);
+	percpu_ref_exit(&mi->ref);
+}
+
+static void virtio_fs_percpu_kill(void *data)
+{
+	percpu_ref_kill(data);
+}
+
+static void virtio_fs_cleanup_dax(void *data)
+{
+	struct virtio_fs *fs = data;
+
+	kill_dax(fs->dax_dev);
+	put_dax(fs->dax_dev);
+}
+
+static int virtio_fs_setup_dax(struct virtio_device *vdev, struct virtio_fs *fs)
+{
+	struct virtio_fs_memremap_info *mi;
+	struct dev_pagemap *pgmap;
+	struct pci_dev *pci_dev;
+	phys_addr_t phys_addr;
+	size_t len;
+	int ret;
+
+	if (!IS_ENABLED(CONFIG_DAX_DRIVER))
+		return 0;
+
+	/* HACK implement VIRTIO shared memory regions instead of
+	 * directly accessing the PCI BAR from a virtio device driver.
+	 */
+	pci_dev = container_of(vdev->dev.parent, struct pci_dev, dev);
+
+	/* TODO Is this safe - the virtio_pci_* driver doesn't use managed
+	 * device APIs? */
+	ret = pcim_enable_device(pci_dev);
+	if (ret < 0)
+		return ret;
+
+	/* TODO handle case where device doesn't expose BAR? */
+	ret = pci_request_region(pci_dev, VIRTIO_FS_WINDOW_BAR,
+				 "virtio-fs-window");
+	if (ret < 0) {
+		dev_err(&vdev->dev, "%s: failed to request window BAR\n",
+			__func__);
+		return ret;
+	}
+
+	phys_addr = pci_resource_start(pci_dev, VIRTIO_FS_WINDOW_BAR);
+	len = pci_resource_len(pci_dev, VIRTIO_FS_WINDOW_BAR);
+
+	mi = devm_kzalloc(&pci_dev->dev, sizeof(*mi), GFP_KERNEL);
+	if (!mi)
+		return -ENOMEM;
+
+	init_completion(&mi->completion);
+	ret = percpu_ref_init(&mi->ref, virtio_fs_percpu_release, 0,
+			      GFP_KERNEL);
+	if (ret < 0) {
+		dev_err(&vdev->dev, "%s: percpu_ref_init failed (%d)\n",
+			__func__, ret);
+		return ret;
+	}
+
+	ret = devm_add_action(&pci_dev->dev, virtio_fs_percpu_exit, mi);
+	if (ret < 0) {
+		percpu_ref_exit(&mi->ref);
+		return ret;
+	}
+
+	pgmap = &mi->pgmap;
+	pgmap->altmap_valid = false;
+	pgmap->ref = &mi->ref;
+	pgmap->type = MEMORY_DEVICE_FS_DAX;
+
+	/* Ideally we would directly use the PCI BAR resource but
+	 * devm_memremap_pages() wants its own copy in pgmap.  So
+	 * initialize a struct resource from scratch (only the start
+	 * and end fields will be used).
+	 */
+	pgmap->res = (struct resource){
+		.name = "virtio-fs dax window",
+		.start = phys_addr,
+		.end = phys_addr + len,
+	};
+
+	fs->window_kaddr = devm_memremap_pages(&pci_dev->dev, pgmap);
+	if (IS_ERR(fs->window_kaddr))
+		return PTR_ERR(fs->window_kaddr);
+
+	ret = devm_add_action_or_reset(&pci_dev->dev, virtio_fs_percpu_kill,
+				       &mi->ref);
+	if (ret < 0)
+		return ret;
+
+	fs->window_phys_addr = phys_addr;
+	fs->window_len = len;
+
+	dev_dbg(&vdev->dev, "%s: window kaddr 0x%px phys_addr 0x%llx len %zu\n",
+		__func__, fs->window_kaddr, phys_addr, len);
+
+	fs->dax_dev = alloc_dax(fs, NULL, &virtio_fs_dax_ops);
+	if (!fs->dax_dev)
+		return -ENOMEM;
+
+	return devm_add_action_or_reset(&vdev->dev, virtio_fs_cleanup_dax, fs);
+}
+
 static int virtio_fs_probe(struct virtio_device *vdev)
 {
 	struct virtio_fs *fs;
@@ -416,16 +556,9 @@ static int virtio_fs_probe(struct virtio_device *vdev)
 	/* TODO vq affinity */
 	/* TODO populate notifications vq */
 
-	if (IS_ENABLED(CONFIG_DAX_DRIVER)) {
-		/* TODO map window */
-		fs->window_kaddr = NULL;
-		fs->window_phys_addr = 0;
-
-		fs->dax_dev = alloc_dax(fs, NULL, &virtio_fs_dax_ops);
-		if (!fs->dax_dev)
-			goto out_vqs; /* TODO handle case where device doesn't expose
-					 BAR */
-	}
+	ret = virtio_fs_setup_dax(vdev, fs);
+	if (ret < 0)
+		goto out_vqs;
 
 	/* Bring the device online in case the filesystem is mounted and
 	 * requests need to be sent before we return.
@@ -441,13 +574,6 @@ static int virtio_fs_probe(struct virtio_device *vdev)
 out_vqs:
 	vdev->config->reset(vdev);
 	virtio_fs_cleanup_vqs(vdev, fs);
-
-	if (fs->dax_dev) {
-		kill_dax(fs->dax_dev);
-		put_dax(fs->dax_dev);
-		fs->dax_dev = NULL;
-	}
-
 out:
 	vdev->priv = NULL;
 	return ret;
@@ -465,12 +591,6 @@ static void virtio_fs_remove(struct virtio_device *vdev)
 	mutex_lock(&virtio_fs_mutex);
 	list_del(&fs->list);
 	mutex_unlock(&virtio_fs_mutex);
-
-	if (fs->dax_dev) {
-		kill_dax(fs->dax_dev);
-		put_dax(fs->dax_dev);
-		fs->dax_dev = NULL;
-	}
 
 	vdev->priv = NULL;
 }
