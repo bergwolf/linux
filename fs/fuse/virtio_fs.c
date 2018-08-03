@@ -589,8 +589,11 @@ static int virtio_fs_setup_dax(struct virtio_device *vdev, struct virtio_fs *fs)
 	phys_addr_t phys_addr;
 	size_t bar_len;
 	int ret;
-	u8 have_cache, cache_bar;
-	u64 cache_offset, cache_len;
+        u8 have_cache, have_journal, have_vertab;
+        u8 cache_bar, journal_bar, vertab_bar;
+        u64 cache_offset, cache_len;
+        u64 journal_offset, journal_len;
+        u64 vertab_offset, vertab_len;
 
 	if (!IS_ENABLED(CONFIG_DAX_DRIVER))
 		return 0;
@@ -618,6 +621,25 @@ static int virtio_fs_setup_dax(struct virtio_device *vdev, struct virtio_fs *fs)
 		dev_notice(&vdev->dev, "Cache bar: %d len: 0x%llx @ 0x%llx\n",
 				cache_bar, cache_len, cache_offset);
         }
+
+        have_journal = virtio_pci_find_shm_cap(pci_dev,
+                                             VIRTIO_FS_PCI_SHMCAP_ID_JOURNAL,
+                                             &journal_bar, &journal_offset,
+                                             &journal_len);
+        if (have_journal) {
+                dev_notice(&vdev->dev, "Journal bar: %d len: 0x%llx @ 0x%llx\n",
+                           journal_bar, journal_len, journal_offset);
+        }
+
+        have_vertab = virtio_pci_find_shm_cap(pci_dev,
+                                             VIRTIO_FS_PCI_SHMCAP_ID_VERTAB,
+                                             &vertab_bar, &vertab_offset,
+                                             &vertab_len);
+        if (have_vertab) {
+                dev_notice(&vdev->dev, "Version table bar: %d len: 0x%llx @ 0x%llx\n",
+                           vertab_bar, vertab_len, vertab_offset);
+        }
+
 
 	/* TODO handle case where device doesn't expose BAR? */
 	ret = pci_request_region(pci_dev, cache_bar, "virtio-fs-window");
