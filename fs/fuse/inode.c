@@ -1263,7 +1263,7 @@ int fuse_fill_super_common(struct super_block *sb,
 		goto err_put_root;
 	__set_bit(FR_BACKGROUND, &init_req->flags);
 
-	if (is_bdev) {
+	if (mount_data->destroy) {
 		fc->destroy_req = fuse_request_alloc(0);
 		if (!fc->destroy_req)
 			goto err_free_init_req;
@@ -1339,6 +1339,7 @@ static int fuse_fill_super(struct super_block *sb, void *data, int silent)
 	d.fiq_ops = &fuse_dev_fiq_ops;
 	d.fiq_priv = NULL;
 	d.fudptr = &file->private_data;
+	d.destroy = is_bdev;
 	err = fuse_fill_super_common(sb, &d);
 
 err_fput:
