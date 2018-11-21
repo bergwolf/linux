@@ -520,6 +520,8 @@ static int virtio_fs_setup_dax(struct virtio_device *vdev, struct virtio_fs *fs)
 	phys_addr_t phys_addr;
 	size_t len;
 	int ret;
+	u8 have_cache, cache_bar;
+	u64 cache_offset, cache_len;
 
 	if (!IS_ENABLED(CONFIG_DAX_DRIVER))
 		return 0;
@@ -534,6 +536,19 @@ static int virtio_fs_setup_dax(struct virtio_device *vdev, struct virtio_fs *fs)
 	ret = pcim_enable_device(pci_dev);
 	if (ret < 0)
 		return ret;
+
+	have_cache = virtio_pci_find_shm_cap(pci_dev,
+			VIRTIO_FS_PCI_SHMCAP_ID_CACHE, &cache_bar,
+			&cache_offset, &cache_len);
+
+	if (!have_cache) {
+		dev_err(&vdev->dev, "%s: No cache capability\n",
+			__func__);
+		return -ENXIO;
+	} else {
+		dev_notice(&vdev->dev, "Cache bar: %d len: 0x%llx @ 0x%llx\n",
+				cache_bar, cache_len, cache_offset);
+        }
 
 	/* TODO handle case where device doesn't expose BAR? */
 	ret = pci_request_region(pci_dev, VIRTIO_FS_WINDOW_BAR,
