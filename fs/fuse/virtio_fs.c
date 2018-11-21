@@ -14,11 +14,6 @@
 #include <uapi/linux/virtio_pci.h>
 #include "fuse_i.h"
 
-enum {
-	/* PCI BAR number of the virtio-fs DAX window */
-	VIRTIO_FS_WINDOW_BAR = 2,
-};
-
 /* List of virtio-fs device instances and a lock for the list */
 static DEFINE_MUTEX(virtio_fs_mutex);
 static LIST_HEAD(virtio_fs_instances);
@@ -518,7 +513,7 @@ static int virtio_fs_setup_dax(struct virtio_device *vdev, struct virtio_fs *fs)
 	struct dev_pagemap *pgmap;
 	struct pci_dev *pci_dev;
 	phys_addr_t phys_addr;
-	size_t len;
+	size_t bar_len;
 	int ret;
 	u8 have_cache, cache_bar;
 	u64 cache_offset, cache_len;
@@ -551,16 +546,12 @@ static int virtio_fs_setup_dax(struct virtio_device *vdev, struct virtio_fs *fs)
         }
 
 	/* TODO handle case where device doesn't expose BAR? */
-	ret = pci_request_region(pci_dev, VIRTIO_FS_WINDOW_BAR,
-				 "virtio-fs-window");
+	ret = pci_request_region(pci_dev, cache_bar, "virtio-fs-window");
 	if (ret < 0) {
 		dev_err(&vdev->dev, "%s: failed to request window BAR\n",
 			__func__);
 		return ret;
 	}
-
-	phys_addr = pci_resource_start(pci_dev, VIRTIO_FS_WINDOW_BAR);
-	len = pci_resource_len(pci_dev, VIRTIO_FS_WINDOW_BAR);
 
 	mi = devm_kzalloc(&pci_dev->dev, sizeof(*mi), GFP_KERNEL);
 	if (!mi)
@@ -586,6 +577,17 @@ static int virtio_fs_setup_dax(struct virtio_device *vdev, struct virtio_fs *fs)
 	pgmap->ref = &mi->ref;
 	pgmap->type = MEMORY_DEVICE_FS_DAX;
 
+	phys_addr = pci_resource_start(pci_dev, cache_bar);
+	bar_len = pci_resource_len(pci_dev, cache_bar);
+
+	if (cache_offset + cache_len > bar_len) {
+		dev_err(&vdev->dev,
+			"%s: cache bar shorter than cap offset+len\n",
+			__func__);
+		return -EINVAL;
+	}
+	phys_addr += cache_offset;
+
 	/* Ideally we would directly use the PCI BAR resource but
 	 * devm_memremap_pages() wants its own copy in pgmap.  So
 	 * initialize a struct resource from scratch (only the start
@@ -594,7 +596,7 @@ static int virtio_fs_setup_dax(struct virtio_device *vdev, struct virtio_fs *fs)
 	pgmap->res = (struct resource){
 		.name = "virtio-fs dax window",
 		.start = phys_addr,
-		.end = phys_addr + len,
+		.end = phys_addr + cache_len,
 	};
 
 	fs->window_kaddr = devm_memremap_pages(&pci_dev->dev, pgmap);
@@ -607,10 +609,10 @@ static int virtio_fs_setup_dax(struct virtio_device *vdev, struct virtio_fs *fs)
 		return ret;
 
 	fs->window_phys_addr = phys_addr;
-	fs->window_len = len;
+	fs->window_len = cache_len;
 
-	dev_dbg(&vdev->dev, "%s: window kaddr 0x%px phys_addr 0x%llx len %zu\n",
-		__func__, fs->window_kaddr, phys_addr, len);
+	dev_dbg(&vdev->dev, "%s: cache kaddr 0x%px phys_addr 0x%llx len %llx\n",
+		__func__, fs->window_kaddr, phys_addr, cache_len);
 
 	fs->dax_dev = alloc_dax(fs, NULL, &virtio_fs_dax_ops);
 	if (!fs->dax_dev)
