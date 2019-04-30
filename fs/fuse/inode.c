@@ -640,7 +640,7 @@ static int fuse_dax_mem_range_init(struct fuse_conn *fc,
 	phys_addr_t phys_addr;
 	int ret = 0, id;
 	size_t dax_size = -1;
-	unsigned long allocated_ranges = 0, i;
+	unsigned long i;
 
 	id = dax_read_lock();
 	nr_pages = dax_direct_access(dax_dev, 0, PHYS_PFN(dax_size), &kaddr,
@@ -670,12 +670,11 @@ static int fuse_dax_mem_range_init(struct fuse_conn *fc,
 		range->length = FUSE_DAX_MEM_RANGE_SZ;
 		list_add_tail(&range->list, &mem_ranges);
 		INIT_LIST_HEAD(&range->busy_list);
-		allocated_ranges++;
 	}
 
 	list_replace_init(&mem_ranges, &fc->free_ranges);
-	fc->nr_free_ranges = allocated_ranges;
-	fc->nr_ranges = allocated_ranges;
+	fc->nr_free_ranges = nr_ranges;
+	fc->nr_ranges = nr_ranges;
 	return 0;
 out_err:
 	/* Free All allocated elements */
