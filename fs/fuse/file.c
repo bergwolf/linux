@@ -3817,13 +3817,13 @@ static struct fuse_dax_mapping *alloc_dax_mapping_reclaim(struct fuse_conn *fc,
 		if (dmap)
 			return dmap;
 
-		if (fi->nr_dmaps)
+		if (READ_ONCE(fi->nr_dmaps))
 			return fuse_dax_reclaim_first_mapping(fc, inode);
 		/*
 		 * There are no mappings which can be reclaimed.
 		 * Wait for one.
 		 */
-		if (!(fc->nr_free_ranges > 0)) {
+		if (!(READ_ONCE(fc->nr_free_ranges) > 0)) {
 			if (wait_event_killable_exclusive(fc->dax_range_waitq,
 					(fc->nr_free_ranges > 0)))
 				return ERR_PTR(-EINTR);
