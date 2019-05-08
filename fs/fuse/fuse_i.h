@@ -1189,5 +1189,7 @@ unsigned fuse_len_args(unsigned numargs, struct fuse_arg *args);
 u64 fuse_get_unique(struct fuse_iqueue *fiq);
 void fuse_dax_free_mem_worker(struct work_struct *work);
 void fuse_removemapping(struct inode *inode);
+void fuse_dax_free_mappings_range(struct fuse_conn *fc, struct inode *inode,
+			loff_t start, loff_t end);
 
 #endif /* _FS_FUSE_I_H */

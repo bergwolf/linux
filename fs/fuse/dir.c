@@ -1751,6 +1751,11 @@ int fuse_do_setattr(struct dentry *dentry, struct iattr *attr,
 		down_write(&fi->i_mmap_sem);
 		truncate_pagecache(inode, outarg.attr.size);
 		invalidate_inode_pages2(inode->i_mapping);
+		// Free dmap beyond i_size
+		if (IS_DAX(inode) && oldsize > outarg.attr.size)
+			fuse_dax_free_mappings_range(fc, inode,
+						     outarg.attr.size, -1);
+
 		up_write(&fi->i_mmap_sem);
 	}
 
