@@ -170,18 +170,22 @@ static inline void virtblk_request_done(struct request *req)
 	blk_mq_end_request(req, virtblk_result(vbr));
 }
 
-static void virtblk_done(struct virtqueue *vq)
+/* Returns true if one or more requests completed */
+static bool virtblk_complete_requests(struct virtqueue *vq)
 {
 	struct virtio_blk *vblk = vq->vdev->priv;
 	bool req_done = false;
+	bool disable_cb;
 	int qid = vq->index;
 	struct virtblk_req *vbr;
 	unsigned long flags;
 	unsigned int len;
 
 	spin_lock_irqsave(&vblk->vqs[qid].lock, flags);
+	disable_cb = virtqueue_cb_enabled(vq);
 	do {
-		virtqueue_disable_cb(vq);
+		if (disable_cb)
+			virtqueue_disable_cb(vq);
 		while ((vbr = virtqueue_get_buf(vblk->vqs[qid].vq, &len)) != NULL) {
 			struct request *req = blk_mq_rq_from_pdu(vbr);
 
@@ -190,12 +194,30 @@ static void virtblk_done(struct virtqueue *vq)
 		}
 		if (unlikely(virtqueue_is_broken(vq)))
 			break;
-	} while (!virtqueue_enable_cb(vq));
+	} while (disable_cb && !virtqueue_enable_cb(vq));
 
 	/* In case queue is stopped waiting for more buffers. */
 	if (req_done)
 		blk_mq_start_stopped_hw_queues(vblk->disk->queue, true);
 	spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
+
+	return req_done;
+}
+
+static int virtblk_poll(struct blk_mq_hw_ctx *hctx)
+{
+	struct virtio_blk *vblk = hctx->queue->queuedata;
+	struct virtqueue *vq = vblk->vqs[hctx->queue_num].vq;
+
+	if (!virtqueue_more_used(vq))
+		return 0;
+
+	return virtblk_complete_requests(vq);
+}
+
+static void virtblk_done(struct virtqueue *vq)
+{
+	virtblk_complete_requests(vq);
 }
 
 #ifdef VIRTIO_BLK_IOURING
@@ -354,6 +376,12 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 		return BLK_STS_OK;
 	}
 #endif /* VIRTIO_BLK_IOURING */
+
+	/* TODO how to handle multiple hipri and non-hipri requests at the same time? */
+	if (req->cmd_flags & REQ_HIPRI)
+		virtqueue_disable_cb(vblk->vqs[qid].vq);
+	else
+		virtqueue_enable_cb_prepare(vblk->vqs[qid].vq);
 
 	err = virtblk_add_req(vblk->vqs[qid].vq, vbr, vbr->sg, num);
 	if (err) {
@@ -762,8 +790,16 @@ static int virtblk_map_queues(struct blk_mq_tag_set *set)
 {
 	struct virtio_blk *vblk = set->driver_data;
 
-	return blk_mq_virtio_map_queues(&set->map[HCTX_TYPE_DEFAULT],
-					vblk->vdev, 0);
+	set->map[HCTX_TYPE_DEFAULT].nr_queues = 1;
+	blk_mq_virtio_map_queues(&set->map[HCTX_TYPE_DEFAULT], vblk->vdev, 0);
+
+	set->map[HCTX_TYPE_READ].nr_queues = 0;
+
+	/* We're actually sharing the polling queue with HCTX_TYPE_DEFAULT */
+	set->map[HCTX_TYPE_POLL].nr_queues = 1;
+	blk_mq_virtio_map_queues(&set->map[HCTX_TYPE_POLL], vblk->vdev, 0);
+
+	return 0;
 }
 
 static const struct blk_mq_ops virtio_mq_ops = {
@@ -772,6 +808,7 @@ static const struct blk_mq_ops virtio_mq_ops = {
 	.complete	= virtblk_request_done,
 	.init_request	= virtblk_init_request,
 	.map_queues	= virtblk_map_queues,
+	.poll		= virtblk_poll,
 };
 
 static unsigned int virtblk_queue_depth;
@@ -846,6 +883,7 @@ static int virtblk_probe(struct virtio_device *vdev)
 
 	memset(&vblk->tag_set, 0, sizeof(vblk->tag_set));
 	vblk->tag_set.ops = &virtio_mq_ops;
+	vblk->tag_set.nr_maps = 3; /* default, read, and poll */
 	vblk->tag_set.queue_depth = virtblk_queue_depth;
 	vblk->tag_set.numa_node = NUMA_NO_NODE;
 	vblk->tag_set.flags = BLK_MQ_F_SHOULD_MERGE;

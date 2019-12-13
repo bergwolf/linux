@@ -1906,6 +1906,18 @@ void *virtqueue_get_buf(struct virtqueue *_vq, unsigned int *len)
 	return virtqueue_get_buf_ctx(_vq, len, NULL);
 }
 EXPORT_SYMBOL_GPL(virtqueue_get_buf);
+
+bool virtqueue_cb_enabled(struct virtqueue *_vq)
+{
+	struct vring_virtqueue *vq = to_vvq(_vq);
+
+	if (vq->packed_ring)
+		return vq->packed.event_flags_shadow != VRING_PACKED_EVENT_FLAG_DISABLE;
+	else
+		return !(vq->split.avail_flags_shadow & VRING_AVAIL_F_NO_INTERRUPT);
+}
+EXPORT_SYMBOL_GPL(virtqueue_cb_enabled);
+
 /**
  * virtqueue_disable_cb - disable callbacks
  * @_vq: the struct virtqueue we're talking about.
@@ -2029,7 +2041,9 @@ static inline bool more_used(const struct vring_virtqueue *vq)
 	return vq->packed_ring ? more_used_packed(vq) : more_used_split(vq);
 }
 
-bool virtqueue_more_used(struct virtqueue *_vq)
+/* TODO unify with virtqueue_poll()? */
+/* TODO is it really safe not to lock? */
+bool virtqueue_more_used(const struct virtqueue *_vq)
 {
 	struct vring_virtqueue *vq = to_vvq(_vq);
 
