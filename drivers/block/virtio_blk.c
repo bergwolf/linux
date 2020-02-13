@@ -69,6 +69,8 @@ struct virtio_blk {
 	/* num of vqs */
 	int num_vqs;
 	struct virtio_blk_vq *vqs;
+
+	bool use_iouring;
 };
 
 struct virtblk_req {
@@ -76,6 +78,25 @@ struct virtblk_req {
 	u8 status;
 	struct scatterlist sg[];
 };
+
+#define VIRTIO_BLK_IOURING
+
+#ifdef VIRTIO_BLK_IOURING
+#include <uapi/linux/io_uring.h>
+
+#define VIRTIO_BLK_F_IO_URING   15
+#define IO_URING_MR_BASE        0xc0000000
+#define IO_URING_MR_SIZE        (1<<20)
+
+struct virtio_blk_iouring {
+	uint64_t mr_base;
+	uint64_t mr_size;
+	uint64_t sqcq_offset;
+	uint64_t sqes_offset;
+	struct io_uring_params params;
+};
+
+#endif /* VIRTIO_BLK_IOURING */
 
 static inline blk_status_t virtblk_result(struct virtblk_req *vbr)
 {
@@ -259,6 +280,18 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 	}
 
 	spin_lock_irqsave(&vblk->vqs[qid].lock, flags);
+
+#ifdef VIRTIO_BLK_IOURING
+	if (vblk->use_iouring && vbr->out_hdr.type == 0) {
+		/* Use io_uring for read and write */
+
+		/*
+		 * TODO:
+		 *      - vbr is the userspace data
+		 */
+	}
+#endif /* VIRTIO_BLK_IOURING */
+
 	err = virtblk_add_req(vblk->vqs[qid].vq, vbr, vbr->sg, num);
 	if (err) {
 		virtqueue_kick(vblk->vqs[qid].vq);
@@ -670,6 +703,30 @@ static int virtblk_map_queues(struct blk_mq_tag_set *set)
 					vblk->vdev, 0);
 }
 
+#ifdef VIRTIO_BLK_IOURING
+static int virtblk_iouring_init(struct virtio_blk *vblk)
+{
+    	struct virtio_blk_iouring __iomem *iou;
+	void __iomem *mr_base;
+
+	if (request_mem_region(IO_URING_MR_BASE, IO_URING_MR_SIZE,
+	                       "io_uring mr") == NULL)
+		return -EBUSY;
+
+	mr_base = ioremap(IO_URING_MR_BASE, IO_URING_MR_SIZE);
+	if (mr_base == NULL) {
+		release_mem_region(IO_URING_MR_BASE, IO_URING_MR_SIZE);
+		return -ENOMEM;
+	}
+
+	iou = mr_base;
+	printk("sqes val(uint64_t): %lld\n", *((uint64_t *)(mr_base + iou->sqes_offset)));
+	printk("sqcq val(uint64_t): %lld\n", *((uint64_t *)(mr_base + iou->sqcq_offset)));
+
+	return 0;
+}
+#endif /* VIRTIO_BLK_IOURING */
+
 static const struct blk_mq_ops virtio_mq_ops = {
 	.queue_rq	= virtio_queue_rq,
 	.commit_rqs	= virtio_commit_rqs,
@@ -866,6 +923,18 @@ static int virtblk_probe(struct virtio_device *vdev)
 		blk_queue_max_write_zeroes_sectors(q, v ? v : UINT_MAX);
 	}
 
+#ifdef VIRTIO_BLK_IOURING
+	vblk->use_iouring = false;
+
+	if (virtio_has_feature(vdev, VIRTIO_BLK_F_IO_URING)) {
+		err = virtblk_iouring_init(vblk);
+		if (err)
+			goto out_free_tags;
+
+		vblk->use_iouring = true;
+	}
+#endif /* VIRTIO_BLK_IOURING */
+
 	virtblk_update_capacity(vblk, false);
 	virtio_device_ready(vdev);
 
@@ -958,6 +1027,9 @@ static unsigned int features_legacy[] = {
 	VIRTIO_BLK_F_RO, VIRTIO_BLK_F_BLK_SIZE,
 	VIRTIO_BLK_F_FLUSH, VIRTIO_BLK_F_TOPOLOGY, VIRTIO_BLK_F_CONFIG_WCE,
 	VIRTIO_BLK_F_MQ, VIRTIO_BLK_F_DISCARD, VIRTIO_BLK_F_WRITE_ZEROES,
+#ifdef VIRTIO_BLK_IOURING
+	VIRTIO_BLK_F_IO_URING,
+#endif /* VIRTIO_BLK_IOURING */
 }
 ;
 static unsigned int features[] = {
@@ -965,6 +1037,9 @@ static unsigned int features[] = {
 	VIRTIO_BLK_F_RO, VIRTIO_BLK_F_BLK_SIZE,
 	VIRTIO_BLK_F_FLUSH, VIRTIO_BLK_F_TOPOLOGY, VIRTIO_BLK_F_CONFIG_WCE,
 	VIRTIO_BLK_F_MQ, VIRTIO_BLK_F_DISCARD, VIRTIO_BLK_F_WRITE_ZEROES,
+#ifdef VIRTIO_BLK_IOURING
+	VIRTIO_BLK_F_IO_URING,
+#endif /* VIRTIO_BLK_IOURING */
 };
 
 static struct virtio_driver virtio_blk = {
