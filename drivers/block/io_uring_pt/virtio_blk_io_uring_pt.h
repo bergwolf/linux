@@ -2,6 +2,7 @@
 #define _VIRTIO_BLK_IO_URING_PT_H
 
 #include <uapi/linux/io_uring.h>
+#include "liburing.h"
 
 #define VIRTIO_BLK_F_IO_URING   15
 #define IO_URING_MR_BASE        0xd0000000
@@ -19,53 +20,12 @@ struct virtio_blk_iouring {
 	struct io_uring_params params;
 };
 
-/*
- * Library interface to io_uring
- */
-struct io_uring_sq {
-	unsigned *khead;
-	unsigned *ktail;
-	unsigned *kring_mask;
-	unsigned *kring_entries;
-	unsigned *kflags;
-	unsigned *kdropped;
-	unsigned *array;
-	struct io_uring_sqe *sqes;
-
-	unsigned sqe_head;
-	unsigned sqe_tail;
-
-	size_t ring_sz;
-	void *ring_ptr;
-};
-
-struct io_uring_cq {
-	unsigned *khead;
-	unsigned *ktail;
-	unsigned *kring_mask;
-	unsigned *kring_entries;
-	unsigned *koverflow;
-	struct io_uring_cqe *cqes;
-
-	size_t ring_sz;
-	void *ring_ptr;
-};
-
-struct io_uring {
-	struct io_uring_sq sq;
-	struct io_uring_cq cq;
-	unsigned flags;
-	int ring_fd;
-};
-
 
 struct io_uring_pt {
 	struct io_uring ring;
 	uint64_t phy_offset;
 	bool enabled;
 };
-
-struct virtio_blk;
 
 static int io_uring_mmap(void *sqcq, void* sqes,
 			 struct io_uring_params *p,

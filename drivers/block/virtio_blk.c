@@ -20,7 +20,7 @@
 #define VIRTIO_BLK_IOURING
 
 #ifdef VIRTIO_BLK_IOURING
-#include "virtio_blk_io_uring_pt.h"
+#include "io_uring_pt/virtio_blk_io_uring_pt.h"
 #endif /* VIRTIO_BLK_IOURING */
 
 #define PART_BITS 4
