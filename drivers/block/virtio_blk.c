@@ -271,7 +271,7 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 	spin_lock_irqsave(&vblk->vqs[qid].lock, flags);
 
 #ifdef VIRTIO_BLK_IOURING
-	if (vblk->iou_pt.use_iouring && vbr->out_hdr.type == 0) {
+	if (vblk->iou_pt.enabled && vbr->out_hdr.type == 0) {
 		/* Use io_uring for read and write */
 
 		/*
@@ -889,14 +889,14 @@ static int virtblk_probe(struct virtio_device *vdev)
 	}
 
 #ifdef VIRTIO_BLK_IOURING
-	vblk->iou_pt.use_iouring = false;
+	vblk->iou_pt.enabled = false;
 
 	if (virtio_has_feature(vdev, VIRTIO_BLK_F_IO_URING)) {
-		err = virtblk_iouring_init(vblk);
+		err = virtblk_iouring_init(&vblk->iou_pt);
 		if (err)
 			goto out_free_tags;
 
-		vblk->iou_pt.use_iouring = true;
+		vblk->iou_pt.enabled = true;
 	}
 #endif /* VIRTIO_BLK_IOURING */
 

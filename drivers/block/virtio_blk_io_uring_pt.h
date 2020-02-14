@@ -7,6 +7,9 @@
 #define IO_URING_MR_BASE        0xd0000000
 #define IO_URING_MR_SIZE        (1<<20)
 
+/*
+ * Shared with the host
+ */
 struct virtio_blk_iouring {
 	uint64_t mr_base;
 	uint64_t mr_size;
@@ -16,18 +19,59 @@ struct virtio_blk_iouring {
 	struct io_uring_params params;
 };
 
+/*
+ * Library interface to io_uring
+ */
+struct io_uring_sq {
+	unsigned *khead;
+	unsigned *ktail;
+	unsigned *kring_mask;
+	unsigned *kring_entries;
+	unsigned *kflags;
+	unsigned *kdropped;
+	unsigned *array;
+	struct io_uring_sqe *sqes;
+
+	unsigned sqe_head;
+	unsigned sqe_tail;
+
+	size_t ring_sz;
+	void *ring_ptr;
+};
+
+struct io_uring_cq {
+	unsigned *khead;
+	unsigned *ktail;
+	unsigned *kring_mask;
+	unsigned *kring_entries;
+	unsigned *koverflow;
+	struct io_uring_cqe *cqes;
+
+	size_t ring_sz;
+	void *ring_ptr;
+};
+
+struct io_uring {
+	struct io_uring_sq sq;
+	struct io_uring_cq cq;
+	unsigned flags;
+	int ring_fd;
+};
+
+
 struct io_uring_pt {
 	struct io_uring ring;
 	uint64_t phy_offset;
 	bool enabled;
 };
 
+struct virtio_blk;
+
 static int io_uring_mmap(void *sqcq, void* sqes,
 			 struct io_uring_params *p,
 			 struct io_uring_sq *sq, struct io_uring_cq *cq)
 {
 	size_t size;
-	int ret;
 
 	sq->ring_sz = p->sq_off.array + p->sq_entries * sizeof(unsigned);
 	cq->ring_sz = p->cq_off.cqes + p->cq_entries * sizeof(struct io_uring_cqe);
@@ -67,12 +111,11 @@ static int io_uring_mmap(void *sqcq, void* sqes,
 }
 
 static int io_uring_queue_mmap(struct io_uring_pt *iou_pt,
-			       void __iomem *mr_base);
+			       void __iomem *mr_base)
 {
     	struct virtio_blk_iouring __iomem *vbi = mr_base;
 	struct io_uring_params *p = &vbi->params;
 	struct io_uring *ring = &iou_pt->ring;
-	int ret;
 
 	printk("sqes val(uint64_t): %lld\n", *((uint64_t *)(mr_base + vbi->sqes_offset)));
 	printk("sqcq val(uint64_t): %lld\n", *((uint64_t *)(mr_base + vbi->sqcq_offset)));
@@ -86,7 +129,7 @@ static int io_uring_queue_mmap(struct io_uring_pt *iou_pt,
 }
 
 
-static int virtblk_iouring_init(struct virtio_blk *vblk)
+static int virtblk_iouring_init(struct io_uring_pt *iou_pt)
 {
 	void __iomem *mr_base;
 
@@ -100,7 +143,7 @@ static int virtblk_iouring_init(struct virtio_blk *vblk)
 		return -ENOMEM;
 	}
 
-	return io_uring_queue_mmap(&vblk->iou_pt, mr_base);
+	return io_uring_queue_mmap(iou_pt, mr_base);
 }
 
 #endif /* _VIRTIO_BLK_IO_URING_PT_H */
