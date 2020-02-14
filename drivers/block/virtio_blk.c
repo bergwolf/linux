@@ -17,6 +17,12 @@
 #include <linux/numa.h>
 #include <uapi/linux/virtio_ring.h>
 
+#define VIRTIO_BLK_IOURING
+
+#ifdef VIRTIO_BLK_IOURING
+#include "virtio_blk_io_uring_pt.h"
+#endif /* VIRTIO_BLK_IOURING */
+
 #define PART_BITS 4
 #define VQ_NAME_LEN 16
 #define MAX_DISCARD_SEGMENTS 256u
@@ -70,7 +76,9 @@ struct virtio_blk {
 	int num_vqs;
 	struct virtio_blk_vq *vqs;
 
-	bool use_iouring;
+#ifdef VIRTIO_BLK_IOURING
+	struct io_uring_pt iou_pt;
+#endif /* VIRTIO_BLK_IOURING */
 };
 
 struct virtblk_req {
@@ -78,25 +86,6 @@ struct virtblk_req {
 	u8 status;
 	struct scatterlist sg[];
 };
-
-#define VIRTIO_BLK_IOURING
-
-#ifdef VIRTIO_BLK_IOURING
-#include <uapi/linux/io_uring.h>
-
-#define VIRTIO_BLK_F_IO_URING   15
-#define IO_URING_MR_BASE        0xc0000000
-#define IO_URING_MR_SIZE        (1<<20)
-
-struct virtio_blk_iouring {
-	uint64_t mr_base;
-	uint64_t mr_size;
-	uint64_t sqcq_offset;
-	uint64_t sqes_offset;
-	struct io_uring_params params;
-};
-
-#endif /* VIRTIO_BLK_IOURING */
 
 static inline blk_status_t virtblk_result(struct virtblk_req *vbr)
 {
@@ -282,7 +271,7 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 	spin_lock_irqsave(&vblk->vqs[qid].lock, flags);
 
 #ifdef VIRTIO_BLK_IOURING
-	if (vblk->use_iouring && vbr->out_hdr.type == 0) {
+	if (vblk->iou_pt.use_iouring && vbr->out_hdr.type == 0) {
 		/* Use io_uring for read and write */
 
 		/*
@@ -703,30 +692,6 @@ static int virtblk_map_queues(struct blk_mq_tag_set *set)
 					vblk->vdev, 0);
 }
 
-#ifdef VIRTIO_BLK_IOURING
-static int virtblk_iouring_init(struct virtio_blk *vblk)
-{
-    	struct virtio_blk_iouring __iomem *iou;
-	void __iomem *mr_base;
-
-	if (request_mem_region(IO_URING_MR_BASE, IO_URING_MR_SIZE,
-	                       "io_uring mr") == NULL)
-		return -EBUSY;
-
-	mr_base = ioremap(IO_URING_MR_BASE, IO_URING_MR_SIZE);
-	if (mr_base == NULL) {
-		release_mem_region(IO_URING_MR_BASE, IO_URING_MR_SIZE);
-		return -ENOMEM;
-	}
-
-	iou = mr_base;
-	printk("sqes val(uint64_t): %lld\n", *((uint64_t *)(mr_base + iou->sqes_offset)));
-	printk("sqcq val(uint64_t): %lld\n", *((uint64_t *)(mr_base + iou->sqcq_offset)));
-
-	return 0;
-}
-#endif /* VIRTIO_BLK_IOURING */
-
 static const struct blk_mq_ops virtio_mq_ops = {
 	.queue_rq	= virtio_queue_rq,
 	.commit_rqs	= virtio_commit_rqs,
@@ -924,14 +889,14 @@ static int virtblk_probe(struct virtio_device *vdev)
 	}
 
 #ifdef VIRTIO_BLK_IOURING
-	vblk->use_iouring = false;
+	vblk->iou_pt.use_iouring = false;
 
 	if (virtio_has_feature(vdev, VIRTIO_BLK_F_IO_URING)) {
 		err = virtblk_iouring_init(vblk);
 		if (err)
 			goto out_free_tags;
 
-		vblk->use_iouring = true;
+		vblk->iou_pt.use_iouring = true;
 	}
 #endif /* VIRTIO_BLK_IOURING */
 
