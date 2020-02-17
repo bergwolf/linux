@@ -106,4 +106,50 @@ static int virtblk_iouring_init(struct io_uring_pt *iou_pt)
 	return io_uring_queue_mmap(iou_pt, mr_base);
 }
 
+static int virtblk_ioruing_add_req(struct io_uring_pt *iou_pt,
+		struct virtblk_req *vbr, unsigned int sg_num)
+{
+	struct io_uring_sqe *sqe;
+	struct iovec *vec;
+
+	if (sg_num) {
+		struct scatterlist *sg = vbr->sg;
+		uint64_t offset;
+
+		vbr->vec = kmalloc_array(sg_num, sizeof(*vbr->vec), GFP_KERNEL);
+		if (!vblk->vqs)
+			return -ENOMEM;
+
+		sqe = io_uring_get_sqe(&iou_pt->ring);
+		if (!sqe) {
+			kfree(vbr->vec);
+			return -EAGAIN;
+		}
+
+		for (int i = 0; i < sg_num; i++) {
+			vbr->vec[i].iov_base = (dma_addr_t)iou_pt->phy_offset +
+					       (dma_addr_t)sg_phys(sg);
+			vbr->vec[i].iov_len = sg->length;
+			sg = sg_next(sg);
+		}
+
+		offset = virtio64_to_cpu(vbr->out_hdr.sector) << SECTOR_SHIFT;
+
+		if (vbr->out_hdr.type &
+		    cpu_to_virtio32(vq->vdev, VIRTIO_BLK_T_OUT))
+			io_uring_prep_writev(sqe, 0, vbr->vec, sg_num, offset);
+		else
+			io_uring_prep_readv(sqe, 0, vbr->vec, sg_num, offset);
+	}
+
+	if (vbr->out_hdr.type & cpu_to_virtio32(vq->vdev, VIRTIO_BLK_T_FLUSH)) {
+		sqe = io_uring_get_sqe(&iou_pt->ring);
+		if (!sqe)
+			return -EAGAIN;
+		io_uring_prep_fsync(sqe, 0, IORING_FSYNC_DATASYNC);
+	}
+
+	return 0;
+}
+
 #endif /* _VIRTIO_BLK_IO_URING_PT_H */
