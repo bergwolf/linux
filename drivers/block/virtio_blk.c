@@ -19,6 +19,15 @@
 
 #define VIRTIO_BLK_IOURING
 
+struct virtblk_req {
+	struct virtio_blk_outhdr out_hdr;
+	u8 status;
+#ifdef VIRTIO_BLK_IOURING
+	struct iovec *vec;
+#endif /* VIRTIO_BLK_IOURING */
+	struct scatterlist sg[];
+};
+
 #ifdef VIRTIO_BLK_IOURING
 #include "io_uring_pt/virtio_blk_io_uring_pt.h"
 #endif /* VIRTIO_BLK_IOURING */
@@ -78,15 +87,6 @@ struct virtio_blk {
 
 #ifdef VIRTIO_BLK_IOURING
 	struct io_uring_pt iou_pt;
-#endif /* VIRTIO_BLK_IOURING */
-};
-
-struct virtblk_req {
-	struct virtio_blk_outhdr out_hdr;
-	u8 status;
-	struct scatterlist sg[];
-#ifdef VIRTIO_BLK_IOURING
-	struct iovec *vec;
 #endif /* VIRTIO_BLK_IOURING */
 };
 
@@ -166,8 +166,8 @@ static inline void virtblk_request_done(struct request *req)
 		      req->special_vec.bv_offset);
 	}
 #ifdef VIRTIO_BLK_IOURING
-	if (vbr->iovec) {
-		kfree(vbr->iovec);
+	if (vbr->vec) {
+		kfree(vbr->vec);
 	}
 #endif /* VIRTIO_BLK_IOURING */
 
@@ -282,12 +282,15 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 	vbr->vec = NULL;
 
 	if (vblk->iou_pt.enabled && (type == 0 || type == VIRTIO_BLK_T_FLUSH)) {
+		uint64_t offset = type ? 0 : (u64)blk_rq_pos(req) << SECTOR_SHIFT;
 		/* Use io_uring for read/write and flush */
 		/*
 		 * TODO:
 		 *      - vbr is the userspace data
 		 */
-		err = virtblk_iouring_add_req(&vblk->iou_pt, vbr, num);
+		err = virtblk_iouring_add_req(&vblk->iou_pt, vbr,
+					      rq_data_dir(req), type, num,
+					      offset);
 		if (err) {
 			spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
 			if (err == -ENOMEM || err == -EAGAIN)
@@ -301,7 +304,8 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 		spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
 
 		if (notify)
-			io_uring_submit(&vblk->iou_pt.ring);
+			virtqueue_notify(vblk->vqs[qid].vq);
+			//io_uring_submit(&vblk->iou_pt.ring);
 
 		return BLK_STS_OK;
 	}

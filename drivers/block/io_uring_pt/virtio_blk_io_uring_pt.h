@@ -106,18 +106,21 @@ static int virtblk_iouring_init(struct io_uring_pt *iou_pt)
 	return io_uring_queue_mmap(iou_pt, mr_base);
 }
 
-static int virtblk_ioruing_add_req(struct io_uring_pt *iou_pt,
-		struct virtblk_req *vbr, unsigned int sg_num)
+static int virtblk_iouring_add_req(struct io_uring_pt *iou_pt,
+		struct virtblk_req *vbr, int direction, uint32_t type,
+		unsigned int sg_num, uint64_t offset)
 {
 	struct io_uring_sqe *sqe;
-	struct iovec *vec;
+
+	printk("virtblk_iouring_add_req - dir: %d type: %u sg_num: %u offset: %llu\n",
+	        direction, type, sg_num, offset);
 
 	if (sg_num) {
 		struct scatterlist *sg = vbr->sg;
-		uint64_t offset;
+		int i;
 
 		vbr->vec = kmalloc_array(sg_num, sizeof(*vbr->vec), GFP_KERNEL);
-		if (!vblk->vqs)
+		if (!vbr->vec)
 			return -ENOMEM;
 
 		sqe = io_uring_get_sqe(&iou_pt->ring);
@@ -126,27 +129,29 @@ static int virtblk_ioruing_add_req(struct io_uring_pt *iou_pt,
 			return -EAGAIN;
 		}
 
-		for (int i = 0; i < sg_num; i++) {
-			vbr->vec[i].iov_base = (dma_addr_t)iou_pt->phy_offset +
-					       (dma_addr_t)sg_phys(sg);
+		for (i = 0; i < sg_num; i++) {
+			dma_addr_t base = iou_pt->phy_offset + sg_phys(sg);
+			vbr->vec[i].iov_base = (void *)base;
 			vbr->vec[i].iov_len = sg->length;
 			sg = sg_next(sg);
 		}
 
-		offset = virtio64_to_cpu(vbr->out_hdr.sector) << SECTOR_SHIFT;
-
-		if (vbr->out_hdr.type &
-		    cpu_to_virtio32(vq->vdev, VIRTIO_BLK_T_OUT))
+		if (direction == WRITE)
 			io_uring_prep_writev(sqe, 0, vbr->vec, sg_num, offset);
 		else
 			io_uring_prep_readv(sqe, 0, vbr->vec, sg_num, offset);
+
+		sqe->flags |= IOSQE_FIXED_FILE;
+		io_uring_sqe_set_data(sqe, vbr);
 	}
 
-	if (vbr->out_hdr.type & cpu_to_virtio32(vq->vdev, VIRTIO_BLK_T_FLUSH)) {
+	if (type & VIRTIO_BLK_T_FLUSH) {
 		sqe = io_uring_get_sqe(&iou_pt->ring);
 		if (!sqe)
 			return -EAGAIN;
 		io_uring_prep_fsync(sqe, 0, IORING_FSYNC_DATASYNC);
+		sqe->flags |= IOSQE_FIXED_FILE;
+		io_uring_sqe_set_data(sqe, vbr);
 	}
 
 	return 0;

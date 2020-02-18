@@ -108,10 +108,135 @@ extern int io_uring_unregister_personality(struct io_uring *ring, int id);
 #endif
 
 /*
+ * Sync internal state with kernel ring state on the SQ side. Returns the
+ * number of pending items in the SQ ring, for the shared ring.
+ */
+static int __io_uring_flush_sq(struct io_uring *ring)
+{
+	struct io_uring_sq *sq = &ring->sq;
+	const unsigned mask = *sq->kring_mask;
+	unsigned ktail, to_submit;
+
+	if (sq->sqe_head == sq->sqe_tail) {
+		ktail = *sq->ktail;
+		goto out;
+	}
+
+	/*
+	 * Fill in sqes that we have queued up, adding them to the kernel ring
+	 */
+	ktail = *sq->ktail;
+	to_submit = sq->sqe_tail - sq->sqe_head;
+	while (to_submit--) {
+		sq->array[ktail & mask] = sq->sqe_head & mask;
+		ktail++;
+		sq->sqe_head++;
+	}
+
+	/*
+	 * Ensure that the kernel sees the SQE updates before it sees the tail
+	 * update.
+	 */
+	io_uring_smp_store_release(sq->ktail, ktail);
+out:
+	return ktail - *sq->khead;
+}
+
+/*
+ * Returns true if we're not using SQ thread (thus nobody submits but us)
+ * or if IORING_SQ_NEED_WAKEUP is set, so submit thread must be explicitly
+ * awakened. For the latter case, we set the thread wakeup flag.
+ */
+static inline bool sq_ring_needs_enter(struct io_uring *ring, unsigned *flags)
+{
+	if (!(ring->flags & IORING_SETUP_SQPOLL))
+		return true;
+	if (IO_URING_READ_ONCE(*ring->sq.kflags) & IORING_SQ_NEED_WAKEUP) {
+		*flags |= IORING_ENTER_SQ_WAKEUP;
+		return true;
+	}
+
+	return false;
+}
+
+/*
+ * Submit sqes acquired from io_uring_get_sqe() to the kernel.
+ *
+ * Returns number of sqes submitted
+ */
+static int __io_uring_submit(struct io_uring *ring, unsigned submitted,
+			     unsigned wait_nr)
+{
+	unsigned flags;
+	int ret;
+
+	flags = 0;
+	if (sq_ring_needs_enter(ring, &flags) || wait_nr) {
+		if (wait_nr || (ring->flags & IORING_SETUP_IOPOLL))
+			flags |= IORING_ENTER_GETEVENTS;
+
+		ret = 0;
+		//ret = __sys_io_uring_enter(ring->ring_fd, submitted, wait_nr,
+		//				flags, NULL);
+		//if (ret < 0)
+		//	return -errno;
+	} else
+		ret = submitted;
+
+	return ret;
+}
+
+static int __io_uring_submit_and_wait(struct io_uring *ring, unsigned wait_nr)
+{
+
+	return __io_uring_submit(ring, __io_uring_flush_sq(ring), wait_nr);
+}
+
+/*
+ * Submit sqes acquired from io_uring_get_sqe() to the kernel.
+ *
+ * Returns number of sqes submitted
+ */
+static int io_uring_submit(struct io_uring *ring)
+{
+	return __io_uring_submit_and_wait(ring, 0);
+}
+
+
+
+#define __io_uring_get_sqe(sq, __head) ({				\
+	unsigned __next = (sq)->sqe_tail + 1;				\
+	struct io_uring_sqe *__sqe = NULL;				\
+									\
+	if (__next - __head <= *(sq)->kring_entries) {			\
+		__sqe = &(sq)->sqes[(sq)->sqe_tail & *(sq)->kring_mask];\
+		(sq)->sqe_tail = __next;				\
+	}								\
+	__sqe;								\
+})
+
+/*
+ * Return an sqe to fill. Application must later call io_uring_submit()
+ * when it's ready to tell the kernel about it. The caller may call this
+ * function multiple times before calling io_uring_submit().
+ *
+ * Returns a vacant sqe, or NULL if we're full.
+ */
+static struct io_uring_sqe *io_uring_get_sqe(struct io_uring *ring)
+{
+	struct io_uring_sq *sq = &ring->sq;
+
+	if (!(ring->flags & IORING_SETUP_SQPOLL))
+		return __io_uring_get_sqe(sq, sq->sqe_head);
+
+	return __io_uring_get_sqe(sq, io_uring_smp_load_acquire(sq->khead));
+}
+
+/*
  * Helper for the peek/wait single cqe functions. Exported because of that,
  * but probably shouldn't be used directly in an application.
  */
-int __io_uring_get_cqe(struct io_uring *ring,
+static int __io_uring_get_cqe(struct io_uring *ring,
 			      struct io_uring_cqe **cqe_ptr, unsigned submit,
 			      unsigned wait_nr, sigset_t *sigmask);
 
@@ -440,28 +565,12 @@ static int __io_uring_peek_cqe(struct io_uring *ring, struct io_uring_cqe **cqe_
 	return err;
 }
 
-/*
- * Returns true if we're not using SQ thread (thus nobody submits but us)
- * or if IORING_SQ_NEED_WAKEUP is set, so submit thread must be explicitly
- * awakened. For the latter case, we set the thread wakeup flag.
- */
-static inline bool sq_ring_needs_enter(struct io_uring *ring, unsigned *flags)
-{
-	if (!(ring->flags & IORING_SETUP_SQPOLL))
-		return true;
-	if (IO_URING_READ_ONCE(*ring->sq.kflags) & IORING_SQ_NEED_WAKEUP) {
-		*flags |= IORING_ENTER_SQ_WAKEUP;
-		return true;
-	}
-
-	return false;
-}
-
 static int __io_uring_get_cqe(struct io_uring *ring, struct io_uring_cqe **cqe_ptr,
 		       unsigned submit, unsigned wait_nr, sigset_t *sigmask)
 {
 	struct io_uring_cqe *cqe = NULL;
-	int ret = 0, err;
+	//int ret = 0, err;
+	int err;
 
 	do {
 		unsigned flags = 0;
