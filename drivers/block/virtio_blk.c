@@ -304,8 +304,8 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 		spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
 
 		if (notify)
-			virtqueue_notify(vblk->vqs[qid].vq);
-			//io_uring_submit(&vblk->iou_pt.ring);
+			io_uring_submit(&vblk->iou_pt.ring);
+			//virtqueue_notify(vblk->vqs[qid].vq);
 
 		return BLK_STS_OK;
 	}
@@ -927,6 +927,7 @@ static int virtblk_probe(struct virtio_device *vdev)
 			goto out_free_tags;
 
 		vblk->iou_pt.enabled = true;
+		vblk->iou_pt.disk = vblk->disk;
 	}
 #endif /* VIRTIO_BLK_IOURING */
 
@@ -956,6 +957,9 @@ static void virtblk_remove(struct virtio_device *vdev)
 
 	/* Make sure no work handler is accessing the device. */
 	flush_work(&vblk->config_work);
+
+	if (vblk->iou_pt.enabled)
+		virtblk_iouring_fini(&vblk->iou_pt);
 
 	del_gendisk(vblk->disk);
 	blk_cleanup_queue(vblk->disk->queue);

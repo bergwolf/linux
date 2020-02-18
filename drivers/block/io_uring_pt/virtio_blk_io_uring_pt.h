@@ -3,6 +3,8 @@
 
 #include <uapi/linux/io_uring.h>
 #include "liburing.h"
+#include <linux/kthread.h>
+#include <linux/delay.h>
 
 #define VIRTIO_BLK_F_IO_URING   15
 #define IO_URING_MR_BASE        0xd0000000
@@ -25,7 +27,47 @@ struct io_uring_pt {
 	struct io_uring ring;
 	uint64_t phy_offset;
 	bool enabled;
+	struct task_struct *kthread;
+	struct gendisk *disk;
 };
+
+static int iou_pt_kthread(void *data)
+{
+	struct io_uring_pt *iou_pt = (struct io_uring_pt *)data;
+
+	while (!kthread_should_stop()) {
+		struct io_uring_cqe *cqe;
+		bool req_done = false;
+
+		while(io_uring_peek_cqe(&iou_pt->ring, &cqe) == 0) {
+			struct virtblk_req *vbr;
+			struct request *req;
+
+			if (!cqe)
+				break;
+
+			vbr = io_uring_cqe_get_data(cqe);
+			io_uring_cqe_seen(&iou_pt->ring, cqe);
+
+			printk("iou_pt_kthread - vbr: %p res: %d\n", vbr,
+			       cqe->res);
+
+			req = blk_mq_rq_from_pdu(vbr);
+			blk_mq_complete_request(req);
+			req_done = true;
+		}
+
+		/* In case queue is stopped waiting for more buffers. */
+		if (req_done)
+			blk_mq_start_stopped_hw_queues(iou_pt->disk->queue,
+						       true);
+
+		//cpu_relax();
+		msleep(1);
+	}
+
+	return 0;
+}
 
 static int io_uring_mmap(void *sqcq, void* sqes,
 			 struct io_uring_params *p,
@@ -92,6 +134,7 @@ static int io_uring_queue_mmap(struct io_uring_pt *iou_pt,
 static int virtblk_iouring_init(struct io_uring_pt *iou_pt)
 {
 	void __iomem *mr_base;
+	int ret;
 
 	if (request_mem_region(IO_URING_MR_BASE, IO_URING_MR_SIZE,
 	                       "io_uring mr") == NULL)
@@ -99,11 +142,32 @@ static int virtblk_iouring_init(struct io_uring_pt *iou_pt)
 
 	mr_base = ioremap(IO_URING_MR_BASE, IO_URING_MR_SIZE);
 	if (mr_base == NULL) {
-		release_mem_region(IO_URING_MR_BASE, IO_URING_MR_SIZE);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto out;
 	}
 
-	return io_uring_queue_mmap(iou_pt, mr_base);
+	ret = io_uring_queue_mmap(iou_pt, mr_base);
+	if (ret)
+		goto out;
+
+	iou_pt->kthread = kthread_run(iou_pt_kthread, iou_pt,
+				      "io_uring kthread");
+	if (IS_ERR(iou_pt->kthread)) {
+		ret = PTR_ERR(iou_pt->kthread);
+		goto out;
+	}
+
+	return 0;
+out:
+	release_mem_region(IO_URING_MR_BASE, IO_URING_MR_SIZE);
+	return ret;
+}
+
+static void virtblk_iouring_fini(struct io_uring_pt *iou_pt)
+{
+	if (iou_pt->kthread) {
+		kthread_stop(iou_pt->kthread);
+	}
 }
 
 static int virtblk_iouring_add_req(struct io_uring_pt *iou_pt,
@@ -112,16 +176,19 @@ static int virtblk_iouring_add_req(struct io_uring_pt *iou_pt,
 {
 	struct io_uring_sqe *sqe;
 
-	printk("virtblk_iouring_add_req - dir: %d type: %u sg_num: %u offset: %llu\n",
-	        direction, type, sg_num, offset);
+	printk("virtblk_iouring_add_req - vbr: %p dir: %d type: %u sg_num: %u offset: %llu\n",
+	       vbr, direction, type, sg_num, offset);
 
 	if (sg_num) {
 		struct scatterlist *sg = vbr->sg;
+		phys_addr_t vec_phys;
 		int i;
 
 		vbr->vec = kmalloc_array(sg_num, sizeof(*vbr->vec), GFP_KERNEL);
 		if (!vbr->vec)
 			return -ENOMEM;
+
+		vec_phys = iou_pt->phy_offset + virt_to_phys(vbr->vec);
 
 		sqe = io_uring_get_sqe(&iou_pt->ring);
 		if (!sqe) {
@@ -130,16 +197,18 @@ static int virtblk_iouring_add_req(struct io_uring_pt *iou_pt,
 		}
 
 		for (i = 0; i < sg_num; i++) {
-			dma_addr_t base = iou_pt->phy_offset + sg_phys(sg);
+			phys_addr_t base = iou_pt->phy_offset + sg_phys(sg);
 			vbr->vec[i].iov_base = (void *)base;
 			vbr->vec[i].iov_len = sg->length;
 			sg = sg_next(sg);
 		}
 
 		if (direction == WRITE)
-			io_uring_prep_writev(sqe, 0, vbr->vec, sg_num, offset);
+			io_uring_prep_rw(IORING_OP_WRITEV, sqe, 0,
+					 (void *)vec_phys, sg_num, offset);
 		else
-			io_uring_prep_readv(sqe, 0, vbr->vec, sg_num, offset);
+			io_uring_prep_rw(IORING_OP_READV,sqe, 0,
+					 (void *)vec_phys, sg_num, offset);
 
 		sqe->flags |= IOSQE_FIXED_FILE;
 		io_uring_sqe_set_data(sqe, vbr);
