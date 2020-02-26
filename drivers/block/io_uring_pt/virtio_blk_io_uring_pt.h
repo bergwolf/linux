@@ -9,6 +9,7 @@
 #define VIRTIO_BLK_F_IO_URING   15
 #define IO_URING_MR_BASE        0xd0000000
 #define IO_URING_MR_SIZE        (1<<20)
+#define IO_URING_DB_SIZE        1024
 
 /*
  * Shared with the host
@@ -19,6 +20,7 @@ struct virtio_blk_iouring {
 	uint64_t phy_offset;
 	uint64_t sqcq_offset;
 	uint64_t sqes_offset;
+	uint64_t doorbell_offset;
 	struct io_uring_params params;
 };
 
@@ -26,6 +28,7 @@ struct virtio_blk_iouring {
 struct io_uring_pt {
 	struct io_uring ring;
 	uint64_t phy_offset;
+	void __iomem *doorbell_addr;
 	bool enabled;
 	struct task_struct *kthread;
 	struct gendisk *disk;
@@ -123,6 +126,12 @@ static int io_uring_queue_mmap(struct io_uring_pt *iou_pt,
 	printk("sqcq val(uint64_t): %lld\n", *((uint64_t *)(mr_base + vbi->sqcq_offset)));
 
 	iou_pt->phy_offset = vbi->phy_offset;
+	iou_pt->doorbell_addr = mr_base + vbi->doorbell_offset;
+
+	printk("mr_base %p doorbell_offset %llu doorbell_addr %p\n",
+	        mr_base, vbi->doorbell_offset, iou_pt->doorbell_addr);
+
+	iowrite32(42, iou_pt->doorbell_addr);
 
 	memset(ring, 0, sizeof(*ring));
 	return io_uring_mmap(mr_base + vbi->sqcq_offset,
