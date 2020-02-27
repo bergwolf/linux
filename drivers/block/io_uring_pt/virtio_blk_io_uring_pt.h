@@ -48,7 +48,7 @@ static int virtio_blk_iourint_pt_kick(struct io_uring *ring, unsigned submitted,
 	struct io_uring_pt *iou_pt =
 		container_of(ring, struct io_uring_pt, ring);
 
-	printk("submitted %u wait_nr %u flags %u\n", submitted, wait_nr, flags);
+	//printk("submitted %u wait_nr %u flags %u\n", submitted, wait_nr, flags);
 
 	iou_pt->vbi->enter.to_submit = submitted;
 	iou_pt->vbi->enter.min_complete = wait_nr;
@@ -78,8 +78,8 @@ static int iou_pt_kthread(void *data)
 			vbr = io_uring_cqe_get_data(cqe);
 			io_uring_cqe_seen(&iou_pt->ring, cqe);
 
-			printk("iou_pt_kthread - vbr: %p res: %d\n", vbr,
-			       cqe->res);
+			//printk("iou_pt_kthread - vbr: %p res: %d\n", vbr,
+			//       cqe->res);
 
 			req = blk_mq_rq_from_pdu(vbr);
 			blk_mq_complete_request(req);
@@ -92,7 +92,7 @@ static int iou_pt_kthread(void *data)
 						       true);
 
 		//cpu_relax();
-		msleep(1);
+		cond_resched();
 	}
 
 	return 0;
@@ -211,8 +211,8 @@ static int virtblk_iouring_add_req(struct io_uring_pt *iou_pt,
 {
 	struct io_uring_sqe *sqe;
 
-	printk("virtblk_iouring_add_req - vbr: %p dir: %d type: %u sg_num: %u offset: %llu\n",
-	       vbr, direction, type, sg_num, offset);
+	//printk("virtblk_iouring_add_req - vbr: %p dir: %d type: %u sg_num: %u offset: %llu\n",
+	//       vbr, direction, type, sg_num, offset);
 
 	if (sg_num) {
 		struct scatterlist *sg = vbr->sg;
