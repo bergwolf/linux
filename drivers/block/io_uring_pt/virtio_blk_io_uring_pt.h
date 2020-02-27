@@ -20,7 +20,7 @@ struct virtio_blk_iouring {
 	uint64_t phy_offset;
 	uint64_t sqcq_offset;
 	uint64_t sqes_offset;
-	uint64_t doorbell_offset;
+	uint64_t kick_offset;
 	struct io_uring_params params;
 };
 
@@ -28,7 +28,7 @@ struct virtio_blk_iouring {
 struct io_uring_pt {
 	struct io_uring ring;
 	uint64_t phy_offset;
-	void __iomem *doorbell_addr;
+	void __iomem *kick_addr;
 	bool enabled;
 	struct task_struct *kthread;
 	struct gendisk *disk;
@@ -126,12 +126,12 @@ static int io_uring_queue_mmap(struct io_uring_pt *iou_pt,
 	printk("sqcq val(uint64_t): %lld\n", *((uint64_t *)(mr_base + vbi->sqcq_offset)));
 
 	iou_pt->phy_offset = vbi->phy_offset;
-	iou_pt->doorbell_addr = mr_base + vbi->doorbell_offset;
+	iou_pt->kick_addr = mr_base + vbi->kick_offset;
 
-	printk("mr_base %p doorbell_offset %llu doorbell_addr %p\n",
-	        mr_base, vbi->doorbell_offset, iou_pt->doorbell_addr);
+	printk("mr_base %px kick_offset %llu kick_addr %px\n",
+	        mr_base, vbi->kick_offset, iou_pt->kick_addr);
 
-	iowrite32(42, iou_pt->doorbell_addr);
+	iowrite32(42, iou_pt->kick_addr);
 
 	memset(ring, 0, sizeof(*ring));
 	return io_uring_mmap(mr_base + vbi->sqcq_offset,
