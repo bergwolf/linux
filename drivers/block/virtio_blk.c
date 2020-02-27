@@ -87,6 +87,7 @@ struct virtio_blk {
 
 #ifdef VIRTIO_BLK_IOURING
 	struct io_uring_pt iou_pt;
+	struct task_struct *kthread;
 #endif /* VIRTIO_BLK_IOURING */
 };
 
@@ -201,6 +202,50 @@ static void virtblk_done(struct virtqueue *vq)
 		blk_mq_start_stopped_hw_queues(vblk->disk->queue, true);
 	spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
 }
+
+#ifdef VIRTIO_BLK_IOURING
+static int virtblk_kthread(void *data)
+{
+	struct virtio_blk *vblk = (struct virtio_blk *)data;
+	int i;
+
+	for (i = 0; i < vblk->num_vqs; i++) {
+		virtqueue_disable_cb(vblk->vqs[i].vq);
+	}
+
+	while (!kthread_should_stop()) {
+		bool req_done = false;
+
+		for (i = 0; i < vblk->num_vqs; i++) {
+			struct virtio_blk_vq *vqs = &vblk->vqs[i];
+			struct virtblk_req *vbr;
+			unsigned long flags;
+			unsigned int len;
+
+			if (unlikely(virtqueue_is_broken(vqs->vq)))
+				continue;
+
+			spin_lock_irqsave(&vqs->lock, flags);
+
+			while ((vbr = virtqueue_get_buf(vqs->vq, &len)) != NULL) {
+				struct request *req = blk_mq_rq_from_pdu(vbr);
+
+				blk_mq_complete_request(req);
+				req_done = true;
+			}
+
+			spin_unlock_irqrestore(&vqs->lock, flags);
+		}
+
+		if (req_done)
+			blk_mq_start_stopped_hw_queues(vblk->disk->queue, true);
+
+		cond_resched();
+	}
+
+	return 0;
+}
+#endif /* VIRTIO_BLK_IOURING */
 
 static void virtio_commit_rqs(struct blk_mq_hw_ctx *hctx)
 {
@@ -915,6 +960,7 @@ static int virtblk_probe(struct virtio_device *vdev)
 
 #ifdef VIRTIO_BLK_IOURING
 	vblk->iou_pt.enabled = false;
+	vblk->kthread = NULL;
 
 	if (virtio_has_feature(vdev, VIRTIO_BLK_F_IO_URING)) {
 		err = virtblk_iouring_init(&vblk->iou_pt);
@@ -923,6 +969,13 @@ static int virtblk_probe(struct virtio_device *vdev)
 
 		vblk->iou_pt.enabled = true;
 		vblk->iou_pt.disk = vblk->disk;
+	} else {
+		vblk->kthread = kthread_run(virtblk_kthread, vblk,
+					    "vblk kthread");
+		if (IS_ERR(vblk->kthread)) {
+			err = PTR_ERR(vblk->kthread);
+			goto out_free_tags;
+		}
 	}
 #endif /* VIRTIO_BLK_IOURING */
 
@@ -955,6 +1008,9 @@ static void virtblk_remove(struct virtio_device *vdev)
 
 	if (vblk->iou_pt.enabled)
 		virtblk_iouring_fini(&vblk->iou_pt);
+
+	if (vblk->kthread)
+		kthread_stop(vblk->kthread);
 
 	del_gendisk(vblk->disk);
 	blk_cleanup_queue(vblk->disk->queue);

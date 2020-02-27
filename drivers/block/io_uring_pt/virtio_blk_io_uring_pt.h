@@ -68,7 +68,7 @@ static int iou_pt_kthread(void *data)
 		struct io_uring_cqe *cqe;
 		bool req_done = false;
 
-		while(io_uring_peek_cqe(&iou_pt->ring, &cqe) == 0) {
+		while (io_uring_peek_cqe(&iou_pt->ring, &cqe) == 0) {
 			struct virtblk_req *vbr;
 			struct request *req;
 
