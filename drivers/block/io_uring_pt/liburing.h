@@ -49,6 +49,8 @@ struct io_uring {
 	int ring_fd;
 };
 
+static int virtio_blk_iourint_pt_kick(struct io_uring *ring, unsigned submitted,
+				       unsigned wait_nr, unsigned flags);
 /*
  * Library interface
  */
@@ -175,11 +177,16 @@ static int __io_uring_submit(struct io_uring *ring, unsigned submitted,
 		if (wait_nr || (ring->flags & IORING_SETUP_IOPOLL))
 			flags |= IORING_ENTER_GETEVENTS;
 
-		ret = 0;
-		//ret = __sys_io_uring_enter(ring->ring_fd, submitted, wait_nr,
-		//				flags, NULL);
-		//if (ret < 0)
-		//	return -errno;
+		ret = virtio_blk_iourint_pt_kick(ring, submitted, wait_nr,
+						 flags);
+		if (ret < 0)
+			return ret;
+#if 0
+		ret = __sys_io_uring_enter(ring->ring_fd, submitted, wait_nr,
+						flags, NULL);
+		if (ret < 0)
+			return -errno;
+#endif
 	} else
 		ret = submitted;
 
@@ -569,8 +576,7 @@ static int __io_uring_get_cqe(struct io_uring *ring, struct io_uring_cqe **cqe_p
 		       unsigned submit, unsigned wait_nr, sigset_t *sigmask)
 {
 	struct io_uring_cqe *cqe = NULL;
-	//int ret = 0, err;
-	int err;
+	int ret = 0, err;
 
 	do {
 		unsigned flags = 0;
@@ -586,12 +592,18 @@ static int __io_uring_get_cqe(struct io_uring *ring, struct io_uring_cqe **cqe_p
 			flags = IORING_ENTER_GETEVENTS;
 		if (submit)
 			sq_ring_needs_enter(ring, &flags);
-		//if (wait_nr || submit)
-		//	ret = __sys_io_uring_enter(ring->ring_fd, submit,
-		//				   wait_nr, flags, sigmask);
-		//if (ret < 0)
-		//	err = -errno;
-		//submit -= ret;
+		if (wait_nr || submit)
+			ret = virtio_blk_iourint_pt_kick(ring, submit, wait_nr,
+							 flags);
+		if (ret < 0)
+			err = ret;
+#if 0
+			ret = __sys_io_uring_enter(ring->ring_fd, submit,
+						   wait_nr, flags, sigmask);
+		if (ret < 0)
+			err = -errno;
+#endif
+		submit -= ret;
 		if (cqe)
 			break;
 	} while (!err);

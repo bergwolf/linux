@@ -284,10 +284,6 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 	if (vblk->iou_pt.enabled && (type == 0 || type == VIRTIO_BLK_T_FLUSH)) {
 		uint64_t offset = type ? 0 : (u64)blk_rq_pos(req) << SECTOR_SHIFT;
 		/* Use io_uring for read/write and flush */
-		/*
-		 * TODO:
-		 *      - vbr is the userspace data
-		 */
 		err = virtblk_iouring_add_req(&vblk->iou_pt, vbr,
 					      rq_data_dir(req), type, num,
 					      offset);
@@ -305,7 +301,6 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 
 		if (notify)
 			io_uring_submit(&vblk->iou_pt.ring);
-			//virtqueue_notify(vblk->vqs[qid].vq);
 
 		return BLK_STS_OK;
 	}

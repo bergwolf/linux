@@ -14,6 +14,12 @@
 /*
  * Shared with the host
  */
+struct virtio_blk_iouring_enter {
+	unsigned int to_submit;
+	unsigned int min_complete;
+	unsigned int flags;
+};
+
 struct virtio_blk_iouring {
 	uint64_t mr_base;
 	uint64_t mr_size;
@@ -22,17 +28,37 @@ struct virtio_blk_iouring {
 	uint64_t sqes_offset;
 	uint64_t kick_offset;
 	struct io_uring_params params;
+	struct virtio_blk_iouring_enter enter;
 };
 
 
 struct io_uring_pt {
 	struct io_uring ring;
 	uint64_t phy_offset;
+	struct virtio_blk_iouring __iomem *vbi;
 	void __iomem *kick_addr;
 	bool enabled;
 	struct task_struct *kthread;
 	struct gendisk *disk;
 };
+
+static int virtio_blk_iourint_pt_kick(struct io_uring *ring, unsigned submitted,
+				       unsigned wait_nr, unsigned flags)
+{
+	struct io_uring_pt *iou_pt =
+		container_of(ring, struct io_uring_pt, ring);
+
+	printk("submitted %u wait_nr %u flags %u\n", submitted, wait_nr, flags);
+
+	iou_pt->vbi->enter.to_submit = submitted;
+	iou_pt->vbi->enter.min_complete = wait_nr;
+	iou_pt->vbi->enter.flags = flags;
+
+	iowrite32(1, iou_pt->kick_addr);
+
+	return ioread32(iou_pt->kick_addr + 4);
+}
+
 
 static int iou_pt_kthread(void *data)
 {
@@ -125,15 +151,15 @@ static int io_uring_queue_mmap(struct io_uring_pt *iou_pt,
 	printk("sqes val(uint64_t): %lld\n", *((uint64_t *)(mr_base + vbi->sqes_offset)));
 	printk("sqcq val(uint64_t): %lld\n", *((uint64_t *)(mr_base + vbi->sqcq_offset)));
 
+	iou_pt->vbi = vbi;
 	iou_pt->phy_offset = vbi->phy_offset;
 	iou_pt->kick_addr = mr_base + vbi->kick_offset;
 
 	printk("mr_base %px kick_offset %llu kick_addr %px\n",
 	        mr_base, vbi->kick_offset, iou_pt->kick_addr);
 
-	iowrite32(42, iou_pt->kick_addr);
-
 	memset(ring, 0, sizeof(*ring));
+	ring->flags = p->flags;
 	return io_uring_mmap(mr_base + vbi->sqcq_offset,
 			     mr_base + vbi->sqes_offset,
 			     p, &ring->sq, &ring->cq);
