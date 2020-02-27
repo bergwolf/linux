@@ -969,7 +969,9 @@ static int virtblk_probe(struct virtio_device *vdev)
 
 		vblk->iou_pt.enabled = true;
 		vblk->iou_pt.disk = vblk->disk;
-	} else {
+	}
+
+	if (virtio_has_feature(vdev, VIRTIO_BLK_F_KTHREAD)) {
 		vblk->kthread = kthread_run(virtblk_kthread, vblk,
 					    "vblk kthread");
 		if (IS_ERR(vblk->kthread)) {
@@ -1078,7 +1080,7 @@ static unsigned int features_legacy[] = {
 	VIRTIO_BLK_F_FLUSH, VIRTIO_BLK_F_TOPOLOGY, VIRTIO_BLK_F_CONFIG_WCE,
 	VIRTIO_BLK_F_MQ, VIRTIO_BLK_F_DISCARD, VIRTIO_BLK_F_WRITE_ZEROES,
 #ifdef VIRTIO_BLK_IOURING
-	VIRTIO_BLK_F_IO_URING,
+	VIRTIO_BLK_F_IO_URING, VIRTIO_BLK_F_KTHREAD,
 #endif /* VIRTIO_BLK_IOURING */
 }
 ;
@@ -1088,7 +1090,7 @@ static unsigned int features[] = {
 	VIRTIO_BLK_F_FLUSH, VIRTIO_BLK_F_TOPOLOGY, VIRTIO_BLK_F_CONFIG_WCE,
 	VIRTIO_BLK_F_MQ, VIRTIO_BLK_F_DISCARD, VIRTIO_BLK_F_WRITE_ZEROES,
 #ifdef VIRTIO_BLK_IOURING
-	VIRTIO_BLK_F_IO_URING,
+	VIRTIO_BLK_F_IO_URING, VIRTIO_BLK_F_KTHREAD,
 #endif /* VIRTIO_BLK_IOURING */
 };
 

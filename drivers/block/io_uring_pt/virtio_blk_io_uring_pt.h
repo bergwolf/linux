@@ -7,6 +7,8 @@
 #include <linux/delay.h>
 
 #define VIRTIO_BLK_F_IO_URING   15
+#define VIRTIO_BLK_F_KTHREAD    16
+
 #define IO_URING_MR_BASE        0xd0000000
 #define IO_URING_MR_SIZE        (1<<20)
 #define IO_URING_DB_SIZE        1024
