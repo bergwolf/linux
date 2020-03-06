@@ -335,6 +335,7 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 					      rq_data_dir(req), type, num,
 					      offset);
 		if (err) {
+			blk_mq_stop_hw_queue(hctx);
 			spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
 			if (err == -ENOMEM || err == -EAGAIN)
 				return BLK_STS_DEV_RESOURCE;
