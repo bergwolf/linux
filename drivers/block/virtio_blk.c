@@ -254,6 +254,8 @@ static void virtio_commit_rqs(struct blk_mq_hw_ctx *hctx)
 	bool kick;
 
 	spin_lock_irq(&vq->lock);
+	if (vblk->iou_pt.enabled)
+		io_uring_submit(&vblk->iou_pt.ring);
 	kick = virtqueue_kick_prepare(vq->vq);
 	spin_unlock_irq(&vq->lock);
 
