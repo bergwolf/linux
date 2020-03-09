@@ -166,11 +166,6 @@ static inline void virtblk_request_done(struct request *req)
 		kfree(page_address(req->special_vec.bv_page) +
 		      req->special_vec.bv_offset);
 	}
-#ifdef VIRTIO_BLK_IOURING
-	if (vbr->vec) {
-		kfree(vbr->vec);
-	}
-#endif /* VIRTIO_BLK_IOURING */
 
 	blk_mq_end_request(req, virtblk_result(vbr));
 }
@@ -326,7 +321,7 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 	spin_lock_irqsave(&vblk->vqs[qid].lock, flags);
 
 #ifdef VIRTIO_BLK_IOURING
-	vbr->vec = NULL;
+	vbr->vec = (void *)vbr + sizeof(struct scatterlist) * vblk->sg_elems;
 
 	if (vblk->iou_pt.enabled && (type == 0 || type == VIRTIO_BLK_T_FLUSH)) {
 		uint64_t offset = type ? 0 : (u64)blk_rq_pos(req) << SECTOR_SHIFT;
@@ -851,6 +846,9 @@ static int virtblk_probe(struct virtio_device *vdev)
 	vblk->tag_set.cmd_size =
 		sizeof(struct virtblk_req) +
 		sizeof(struct scatterlist) * sg_elems;
+#ifdef VIRTIO_BLK_IOURING
+	vblk->tag_set.cmd_size += sizeof(struct iovec) * sg_elems;
+#endif /* VIRTIO_BLK_IOURING */
 	vblk->tag_set.driver_data = vblk;
 	vblk->tag_set.nr_hw_queues = vblk->num_vqs;
 

@@ -221,10 +221,6 @@ static int virtblk_iouring_add_req(struct io_uring_pt *iou_pt,
 		phys_addr_t vec_phys;
 		int i;
 
-		vbr->vec = kmalloc_array(sg_num, sizeof(*vbr->vec), GFP_KERNEL);
-		if (!vbr->vec)
-			return -ENOMEM;
-
 		vec_phys = iou_pt->phy_offset + virt_to_phys(vbr->vec);
 
 		sqe = io_uring_get_sqe(&iou_pt->ring);
