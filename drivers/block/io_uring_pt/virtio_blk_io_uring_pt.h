@@ -50,7 +50,7 @@ static int virtio_blk_iourint_pt_kick(struct io_uring *ring, unsigned submitted,
 	struct io_uring_pt *iou_pt =
 		container_of(ring, struct io_uring_pt, ring);
 
-	//printk("submitted %u wait_nr %u flags %u\n", submitted, wait_nr, flags);
+	printk("kick - submitted %u wait_nr %u flags %u\n", submitted, wait_nr, flags);
 
 	iou_pt->vbi->enter.to_submit = submitted;
 	iou_pt->vbi->enter.min_complete = wait_nr;
@@ -82,6 +82,9 @@ static int iou_pt_kthread(void *data)
 
 			//printk("iou_pt_kthread - vbr: %p res: %d\n", vbr,
 			//       cqe->res);
+			if (cqe->res < 0) {
+				printk("iou_pt_kthread ERROR- vbr: %p res: %d\n", vbr, cqe->res);
+			}
 
 			req = blk_mq_rq_from_pdu(vbr);
 			blk_mq_complete_request(req);
