@@ -217,7 +217,8 @@ static int virtblk_kthread(void *data)
 			unsigned long flags;
 			unsigned int len;
 
-			if (unlikely(virtqueue_is_broken(vqs->vq)))
+			if (unlikely(virtqueue_is_broken(vqs->vq)) ||
+			    !virtqueue_more_used(vqs->vq))
 				continue;
 
 			spin_lock_irqsave(&vqs->lock, flags);
