@@ -251,8 +251,8 @@ static void virtio_commit_rqs(struct blk_mq_hw_ctx *hctx)
 
 	spin_lock_irq(&vq->lock);
 #ifdef VIRTIO_BLK_IOURING
-	if (vblk->iou_pt.enabled)
-		io_uring_submit(&vblk->iou_pt.ring);
+	//if (vblk->iou_pt.enabled)
+	//	io_uring_submit(&vblk->iou_pt.ring);
 #endif /* VIRTIO_BLK_IOURING */
 	kick = virtqueue_kick_prepare(vq->vq);
 	spin_unlock_irq(&vq->lock);
@@ -346,8 +346,8 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 		spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
 
 		/* should we serialize it? */
-		if (notify)
-			io_uring_submit(&vblk->iou_pt.ring);
+		//if (notify)
+		//	io_uring_submit(&vblk->iou_pt.ring);
 
 		return BLK_STS_OK;
 	}
