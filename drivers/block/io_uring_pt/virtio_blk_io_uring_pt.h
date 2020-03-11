@@ -37,8 +37,8 @@ struct virtio_blk_iouring {
 struct io_uring_pt {
 	struct io_uring ring;
 	uint64_t phy_offset;
-	struct virtio_blk_iouring __iomem *vbi;
-	void __iomem *kick_addr;
+	struct virtio_blk_iouring *vbi;
+	void *kick_addr;
 	bool enabled;
 	struct task_struct *kthread;
 	struct gendisk *disk;
@@ -147,9 +147,9 @@ static int io_uring_mmap(void *sqcq, void* sqes,
 }
 
 static int io_uring_queue_mmap(struct io_uring_pt *iou_pt,
-			       void __iomem *mr_base)
+			       void *mr_base)
 {
-    	struct virtio_blk_iouring __iomem *vbi = mr_base;
+	struct virtio_blk_iouring *vbi = mr_base;
 	struct io_uring_params *p = &vbi->params;
 	struct io_uring *ring = &iou_pt->ring;
 
@@ -173,14 +173,14 @@ static int io_uring_queue_mmap(struct io_uring_pt *iou_pt,
 
 static int virtblk_iouring_init(struct io_uring_pt *iou_pt)
 {
-	void __iomem *mr_base;
+	void *mr_base;
 	int ret;
 
 	if (request_mem_region(IO_URING_MR_BASE, IO_URING_MR_SIZE,
 	                       "io_uring mr") == NULL)
 		return -EBUSY;
 
-	mr_base = ioremap(IO_URING_MR_BASE, IO_URING_MR_SIZE);
+	mr_base = (__force void *)ioremap_cache(IO_URING_MR_BASE, IO_URING_MR_SIZE);
 	if (mr_base == NULL) {
 		ret = -ENOMEM;
 		goto out;
