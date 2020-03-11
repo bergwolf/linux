@@ -70,6 +70,12 @@ static int iou_pt_kthread(void *data)
 		struct io_uring_cqe *cqe;
 		bool req_done = false;
 
+#if 0
+		if (!(*iou_pt->ring.cq.ktail - *iou_pt->ring.cq.khead)) {
+			cond_resched();
+			continue;
+		}
+#endif
 		while (io_uring_peek_cqe(&iou_pt->ring, &cqe) == 0) {
 			struct virtblk_req *vbr;
 			struct request *req;
@@ -248,6 +254,9 @@ static int virtblk_iouring_add_req(struct io_uring_pt *iou_pt,
 
 		sqe->flags |= IOSQE_FIXED_FILE;
 		io_uring_sqe_set_data(sqe, vbr);
+
+		if (type & VIRTIO_BLK_T_FLUSH)
+			printk("VIRTIO_BLK_T_FLUSH define with data!!!!\n");
 	}
 
 	if (type & VIRTIO_BLK_T_FLUSH) {
