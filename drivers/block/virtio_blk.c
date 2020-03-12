@@ -340,8 +340,8 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 			return BLK_STS_IOERR;
 		}
 
-		if (bd->last)
-			notify = true;
+		//if (bd->last)
+		//	notify = true;
 
 		spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
 

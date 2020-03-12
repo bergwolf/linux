@@ -15,7 +15,6 @@
 #define IO_URING_DB_SIZE        1024
 
 #define REQ_MAX_ENTRIES		128
-static struct workqueue_struct *virtblk_iouring_workqueue;
 
 /*
  * Shared with the host
@@ -60,49 +59,61 @@ struct io_uring_pt {
 	int sq_tail;
 };
 
+//#define IOUPT_SQ_WORKER
+#define IOUPT_SQ_KTHREAD
+//#define IOUPT_FIXED
+
+#if defined(IOUPT_SQ_KTHREAD) && defined(IOUPT_SQ_WORKER)
+#error "IOUPT_SQ_KTHREAD & IOUPT_SQ_WORKER can't be both defined!"
+#endif
+
+#ifdef IOUPT_SQ_WORKER
+static struct workqueue_struct *virtblk_iouring_workqueue;
+#endif
+
 static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
-		struct virtblk_iouring_req *req)
+		struct virtblk_req *vbr, int direction, uint32_t type,
+		unsigned int sg_num, uint64_t offset)
 {
 	struct io_uring_sqe *sqe;
 
-	if (req->sg_num) {
-		struct scatterlist *sg = req->vbr->sg;
+	if (sg_num) {
+		struct scatterlist *sg = vbr->sg;
 		phys_addr_t vec_phys;
 		int i;
 
-		if (req->type & VIRTIO_BLK_T_FLUSH)
+		if (type & VIRTIO_BLK_T_FLUSH)
 			printk("VIRTIO_BLK_T_FLUSH define with data!!!!\n");
 
-		vec_phys = iou_pt->phy_offset + virt_to_phys(req->vbr->vec);
-#define IOUPT_FIXED
+		vec_phys = iou_pt->phy_offset + virt_to_phys(vbr->vec);
 #ifndef IOUPT_FIXED
 		sqe = io_uring_get_sqe(&iou_pt->ring);
 		if (!sqe) {
 			return -EAGAIN;
 		}
 
-		for (i = 0; i < req->sg_num; i++) {
+		for (i = 0; i < sg_num; i++) {
 			phys_addr_t base = iou_pt->phy_offset + sg_phys(sg);
-			req->vbr->vec[i].iov_base = (void *)base;
-			req->vbr->vec[i].iov_len = sg->length;
+			vbr->vec[i].iov_base = (void *)base;
+			vbr->vec[i].iov_len = sg->length;
 			sg = sg_next(sg);
 		}
 
-		if (req->direction == WRITE)
+		if (direction == WRITE)
 			io_uring_prep_rw(IORING_OP_WRITEV, sqe, 0,
-					 (void *)vec_phys, req->sg_num,
-					 req->offset);
+					 (void *)vec_phys, sg_num,
+					 offset);
 		else
 			io_uring_prep_rw(IORING_OP_READV,sqe, 0,
-					 (void *)vec_phys, req->sg_num,
-					 req->offset);
+					 (void *)vec_phys, sg_num,
+					 offset);
 
 		sqe->flags |= IOSQE_FIXED_FILE;
-		io_uring_sqe_set_data(sqe, req->vbr);
+		io_uring_sqe_set_data(sqe, vbr);
 #else
 		/* TODO: add new field to count requests */
-		req->vbr->vec[0].iov_len = req->sg_num;
-		for (i = 0; i < req->sg_num; i++) {
+		vbr->vec[0].iov_len = sg_num;
+		for (i = 0; i < sg_num; i++) {
 			phys_addr_t base = iou_pt->phy_offset + sg_phys(sg);
 
 			sqe = io_uring_get_sqe(&iou_pt->ring);
@@ -111,33 +122,33 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 				return -EAGAIN;
 			}
 
-			if (req->direction == WRITE)
+			if (direction == WRITE)
 				io_uring_prep_rw(IORING_OP_WRITE_FIXED, sqe, 0,
 					 (void *)base, sg->length,
-					 req->offset);
+					 offset);
 			else
 				io_uring_prep_rw(IORING_OP_READ_FIXED,sqe, 0,
 					 (void *)base, sg->length,
-					 req->offset);
+					 offset);
 
 			sqe->buf_index = 0;
 			sqe->flags |= IOSQE_FIXED_FILE;
-			io_uring_sqe_set_data(sqe, req->vbr);
+			io_uring_sqe_set_data(sqe, vbr);
 			sg = sg_next(sg);
 		}
 #endif
 	}
 
-	if (req->type & VIRTIO_BLK_T_FLUSH) {
+	if (type & VIRTIO_BLK_T_FLUSH) {
 		sqe = io_uring_get_sqe(&iou_pt->ring);
 		if (!sqe)
 			return -EAGAIN;
 		io_uring_prep_fsync(sqe, 0, IORING_FSYNC_DATASYNC);
 		sqe->flags |= IOSQE_FIXED_FILE;
 #ifdef IOUPT_FIXED
-		req->vbr->vec[0].iov_len = 1;
+		vbr->vec[0].iov_len = 1;
 #endif
-		io_uring_sqe_set_data(sqe, req->vbr);
+		io_uring_sqe_set_data(sqe, vbr);
 	}
 
 	io_uring_submit(&iou_pt->ring);
@@ -145,6 +156,7 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 	return 0;
 }
 
+#if defined(IOUPT_SQ_WORKER) || defined(IOUPT_SQ_KTHREAD)
 static void virtblk_iouring_sq_poll(struct io_uring_pt *iou_pt)
 {
 	int sq_tail = iou_pt->sq_tail;
@@ -160,7 +172,9 @@ static void virtblk_iouring_sq_poll(struct io_uring_pt *iou_pt)
 
 		sq_req = &iou_pt->sq_reqs[sq_tail];
 
-		ret = virtblk_iouring_queue_req(iou_pt, sq_req);
+		ret = virtblk_iouring_queue_req(iou_pt, sq_req->vbr,
+						sq_req->direction, sq_req->type,
+						sq_req->sg_num, sq_req->offset);
 		if (ret != 0) {
 			io_uring_submit(&iou_pt->ring);
 			continue;
@@ -174,6 +188,7 @@ static void virtblk_iouring_sq_poll(struct io_uring_pt *iou_pt)
 	if (submit)
 		io_uring_submit(&iou_pt->ring);
 }
+#endif
 
 static void virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 {
@@ -243,7 +258,9 @@ static int iou_pt_kthread(void *data)
 
 	while (!kthread_should_stop()) {
 
+#ifdef IOUPT_SQ_KTHREAD
 		virtblk_iouring_sq_poll(iou_pt);
+#endif
 
 		virtblk_iouring_cq_poll(iou_pt);
 
@@ -321,6 +338,7 @@ static int io_uring_queue_mmap(struct io_uring_pt *iou_pt,
 			     p, &ring->sq, &ring->cq);
 }
 
+#ifdef IOUPT_SQ_WORKER
 static void virtblk_iouring_sq_work(struct work_struct *work)
 {
 	struct io_uring_pt *iou_pt =
@@ -328,6 +346,7 @@ static void virtblk_iouring_sq_work(struct work_struct *work)
 
 	virtblk_iouring_sq_poll(iou_pt);
 }
+#endif
 
 static int virtblk_iouring_init(struct io_uring_pt *iou_pt)
 {
@@ -359,6 +378,7 @@ static int virtblk_iouring_init(struct io_uring_pt *iou_pt)
 	iou_pt->sq_tail = 0;
 	iou_pt->sq_reqs_size = REQ_MAX_ENTRIES;
 
+#ifdef IOUPT_SQ_WORKER
 	virtblk_iouring_workqueue = alloc_workqueue("io_uring wq", 0, 0);
 	if (!virtblk_iouring_workqueue) {
 		ret = -ENOMEM;
@@ -366,10 +386,13 @@ static int virtblk_iouring_init(struct io_uring_pt *iou_pt)
 	}
 
 	INIT_WORK(&iou_pt->sq_work, virtblk_iouring_sq_work);
+#endif
 
 	return 0;
+#ifdef IOUPT_SQ_WORKER
 out_kthread:
 	kthread_stop(iou_pt->kthread);
+#endif
 out:
 	release_mem_region(IO_URING_MR_BASE, IO_URING_MR_SIZE);
 	return ret;
@@ -377,9 +400,11 @@ out:
 
 static void virtblk_iouring_fini(struct io_uring_pt *iou_pt)
 {
+#ifdef IOUPT_SQ_WORKER
 	flush_work(&iou_pt->sq_work);
 
 	destroy_workqueue(virtblk_iouring_workqueue);
+#endif
 
 	if (iou_pt->kthread) {
 		kthread_stop(iou_pt->kthread);
@@ -390,12 +415,13 @@ static int virtblk_iouring_add_req(struct io_uring_pt *iou_pt,
 		struct virtblk_req *vbr, int direction, uint32_t type,
 		unsigned int sg_num, uint64_t offset)
 {
+	//printk("virtblk_iouring_add_req - vbr: %p dir: %d type: %u sg_num: %u offset: %llu\n",
+	//       vbr, direction, type, sg_num, offset);
+	//
+#if defined(IOUPT_SQ_WORKER) || defined(IOUPT_SQ_KTHREAD)
 	int sq_tail = smp_load_acquire(&iou_pt->sq_tail);
 	int sq_head = iou_pt->sq_head;
 	struct virtblk_iouring_req *sq_req;
-
-	//printk("virtblk_iouring_add_req - vbr: %p dir: %d type: %u sg_num: %u offset: %llu\n",
-	//       vbr, direction, type, sg_num, offset);
 
 	if (CIRC_SPACE(sq_head, sq_tail, iou_pt->sq_reqs_size) == 0)
 		return -EAGAIN;
@@ -411,8 +437,15 @@ static int virtblk_iouring_add_req(struct io_uring_pt *iou_pt,
 	smp_store_release(&iou_pt->sq_head,
 			  (sq_head + 1) & (iou_pt->sq_reqs_size - 1));
 
-	//queue_work(virtblk_iouring_workqueue, &iou_pt->sq_work);
+#ifdef IOUPT_SQ_WORKER
+	queue_work(virtblk_iouring_workqueue, &iou_pt->sq_work);
+#endif
 	return 0;
+#else
+	return virtblk_iouring_queue_req(iou_pt, vbr, direction, type,
+					 sg_num, offset);
+#endif /* defined(IOUPT_SQ_WORKER) || defined(IOUPT_SQ_KTHREAD) */
+
 }
 
 #endif /* _VIRTIO_BLK_IO_URING_PT_H */
