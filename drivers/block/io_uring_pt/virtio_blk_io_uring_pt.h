@@ -70,8 +70,12 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 		phys_addr_t vec_phys;
 		int i;
 
-		vec_phys = iou_pt->phy_offset + virt_to_phys(req->vbr->vec);
+		if (req->type & VIRTIO_BLK_T_FLUSH)
+			printk("VIRTIO_BLK_T_FLUSH define with data!!!!\n");
 
+		vec_phys = iou_pt->phy_offset + virt_to_phys(req->vbr->vec);
+#define IOUPT_FIXED
+#ifndef IOUPT_FIXED
 		sqe = io_uring_get_sqe(&iou_pt->ring);
 		if (!sqe) {
 			return -EAGAIN;
@@ -95,9 +99,33 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 
 		sqe->flags |= IOSQE_FIXED_FILE;
 		io_uring_sqe_set_data(sqe, req->vbr);
+#else
+		/* TODO: add new field to count requests */
+		req->vbr->vec[0].iov_len = req->sg_num;
+		for (i = 0; i < req->sg_num; i++) {
+			phys_addr_t base = iou_pt->phy_offset + sg_phys(sg);
 
-		if (req->type & VIRTIO_BLK_T_FLUSH)
-			printk("VIRTIO_BLK_T_FLUSH define with data!!!!\n");
+			sqe = io_uring_get_sqe(&iou_pt->ring);
+			if (!sqe) {
+				printk("AAAAAAAAAAAAAA\n");
+				return -EAGAIN;
+			}
+
+			if (req->direction == WRITE)
+				io_uring_prep_rw(IORING_OP_WRITE_FIXED, sqe, 0,
+					 (void *)base, sg->length,
+					 req->offset);
+			else
+				io_uring_prep_rw(IORING_OP_READ_FIXED,sqe, 0,
+					 (void *)base, sg->length,
+					 req->offset);
+
+			sqe->buf_index = 0;
+			sqe->flags |= IOSQE_FIXED_FILE;
+			io_uring_sqe_set_data(sqe, req->vbr);
+			sg = sg_next(sg);
+		}
+#endif
 	}
 
 	if (req->type & VIRTIO_BLK_T_FLUSH) {
@@ -106,6 +134,9 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 			return -EAGAIN;
 		io_uring_prep_fsync(sqe, 0, IORING_FSYNC_DATASYNC);
 		sqe->flags |= IOSQE_FIXED_FILE;
+#ifdef IOUPT_FIXED
+		req->vbr->vec[0].iov_len = 1;
+#endif
 		io_uring_sqe_set_data(sqe, req->vbr);
 	}
 
@@ -168,7 +199,14 @@ static void virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 		//       cqe->res);
 		if (cqe->res < 0) {
 			printk("iou_pt_kthread ERROR- vbr: %p res: %d\n", vbr, cqe->res);
+			continue;
 		}
+#ifdef IOUPT_FIXED
+		vbr->vec[0].iov_len--;
+
+		if (vbr->vec[0].iov_len > 0)
+			continue;
+#endif
 
 		req = blk_mq_rq_from_pdu(vbr);
 		blk_mq_complete_request(req);
