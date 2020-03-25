@@ -61,7 +61,7 @@ struct io_uring_pt {
 };
 
 //#define IOUPT_SQ_WORKER
-#define IOUPT_SQ_KTHREAD
+//#define IOUPT_SQ_KTHREAD
 //#define IOUPT_FIXED
 //#define IOUPT_SQ_KTHREAD_DEDICATED
 
