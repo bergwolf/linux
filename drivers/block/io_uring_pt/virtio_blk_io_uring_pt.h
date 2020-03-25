@@ -202,10 +202,11 @@ static void virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 		return;
 	}
 #endif
-	while (io_uring_peek_cqe(&iou_pt->ring, &cqe) == 0) {
+	while (io_uring_cq_ready(&iou_pt->ring)) {
 		struct virtblk_req *vbr;
 		struct request *req;
 
+		io_uring_peek_cqe(&iou_pt->ring, &cqe);
 		if (!cqe)
 			break;
 
