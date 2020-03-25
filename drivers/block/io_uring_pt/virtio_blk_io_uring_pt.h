@@ -257,6 +257,8 @@ static int iou_pt_kthread_sq(void *data)
 	struct io_uring_pt *iou_pt = (struct io_uring_pt *)data;
 
 	while (!kthread_should_stop()) {
+		if (kthread_should_park())
+			kthread_parkme();
 
 		virtblk_iouring_sq_poll(iou_pt);
 
@@ -272,6 +274,8 @@ static int iou_pt_kthread(void *data)
 	struct io_uring_pt *iou_pt = (struct io_uring_pt *)data;
 
 	while (!kthread_should_stop()) {
+		if (kthread_should_park())
+			kthread_parkme();
 
 #if defined(IOUPT_SQ_KTHREAD) && !defined(IOUPT_SQ_KTHREAD_DEDICATED)
 		virtblk_iouring_sq_poll(iou_pt);
