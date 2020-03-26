@@ -6,6 +6,7 @@
 #include <linux/kthread.h>
 #include <linux/delay.h>
 #include <linux/circ_buf.h>
+#include <linux/io.h>
 
 #define VIRTIO_BLK_F_IO_URING   15
 #define VIRTIO_BLK_F_KTHREAD    16
@@ -64,6 +65,7 @@ struct io_uring_pt {
 //#define IOUPT_SQ_KTHREAD
 //#define IOUPT_FIXED
 //#define IOUPT_SQ_KTHREAD_DEDICATED
+#define IOUPT_MEMREMAP
 
 #if defined(IOUPT_SQ_KTHREAD) && defined(IOUPT_SQ_WORKER)
 #error "IOUPT_SQ_KTHREAD & IOUPT_SQ_WORKER can't be both defined!"
@@ -373,11 +375,15 @@ static int virtblk_iouring_init(struct io_uring_pt *iou_pt)
 	void *mr_base;
 	int ret;
 
+#ifdef IOUPT_MEMREMAP
+	mr_base = memremap(IO_URING_MR_BASE, IO_URING_MR_SIZE, MEMREMAP_WB);
+#else
 	if (request_mem_region(IO_URING_MR_BASE, IO_URING_MR_SIZE,
 	                       "io_uring mr") == NULL)
 		return -EBUSY;
 
 	mr_base = (__force void *)ioremap_cache(IO_URING_MR_BASE, IO_URING_MR_SIZE);
+#endif
 	if (mr_base == NULL) {
 		ret = -ENOMEM;
 		goto out;
