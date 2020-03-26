@@ -167,7 +167,7 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 
 	io_uring_submit(&iou_pt->ring);
 
-#ifdef IOUPT_SQ_WORKER
+#ifdef IOUPT_CQ_WORKER
 	queue_work(virtblk_iouring_workqueue, &iou_pt->cq_work);
 #endif
 
