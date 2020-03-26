@@ -213,11 +213,11 @@ static void virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 			break;
 
 		vbr = io_uring_cqe_get_data(cqe);
-		io_uring_cqe_seen(&iou_pt->ring, cqe);
 
+		vbr->status = VIRTIO_BLK_S_OK;
 		if (cqe->res < 0) {
 			printk("cq_poll ERROR- vbr: %p res: %d\n", vbr, cqe->res);
-			continue;
+			vbr->status = VIRTIO_BLK_S_IOERR;
 		}
 #ifdef IOUPT_FIXED
 		vbr->vec[0].iov_len--;
@@ -228,6 +228,7 @@ static void virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 
 		req = blk_mq_rq_from_pdu(vbr);
 		blk_mq_complete_request(req);
+		io_uring_cqe_seen(&iou_pt->ring, cqe);
 		req_done = true;
 	}
 
