@@ -61,6 +61,7 @@ struct io_uring_pt {
 	int sq_tail;
 };
 
+#define IOUPT_CQ_KTHREAD
 //#define IOUPT_SQ_WORKER
 //#define IOUPT_SQ_KTHREAD
 //#define IOUPT_FIXED
@@ -273,6 +274,7 @@ static int iou_pt_kthread_sq(void *data)
 }
 #endif
 
+#if defined(IOUPT_CQ_KTHREAD) || defined(IOUPT_SQ_KTHREAD)
 static int iou_pt_kthread(void *data)
 {
 	struct io_uring_pt *iou_pt = (struct io_uring_pt *)data;
@@ -293,6 +295,7 @@ static int iou_pt_kthread(void *data)
 
 	return 0;
 }
+#endif
 
 static int io_uring_mmap(void *sqcq, void* sqes,
 			 struct io_uring_params *p,
@@ -394,12 +397,14 @@ static int virtblk_iouring_init(struct io_uring_pt *iou_pt)
 	if (ret)
 		goto out;
 
+#if defined(IOUPT_CQ_KTHREAD) || defined(IOUPT_SQ_KTHREAD)
 	iou_pt->kthread = kthread_run(iou_pt_kthread, iou_pt,
 				      "io_uring kthread");
 	if (IS_ERR(iou_pt->kthread)) {
 		ret = PTR_ERR(iou_pt->kthread);
 		goto out;
 	}
+#endif
 
 #ifdef IOUPT_SQ_KTHREAD_DEDICATED
 	iou_pt->kthread_sq = kthread_run(iou_pt_kthread_sq, iou_pt,
