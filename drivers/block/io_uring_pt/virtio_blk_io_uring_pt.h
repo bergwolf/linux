@@ -55,13 +55,17 @@ struct io_uring_pt {
 	struct task_struct *kthread_sq;
 	struct gendisk *disk;
 	struct work_struct sq_work;
+	struct work_struct cq_work;
 	struct virtblk_iouring_req sq_reqs[REQ_MAX_ENTRIES];
 	int sq_reqs_size;
 	int sq_head;
 	int sq_tail;
+	uint64_t req_submitted;
+	uint64_t req_completed;
 };
 
-#define IOUPT_CQ_KTHREAD
+//#define IOUPT_CQ_KTHREAD
+#define IOUPT_CQ_WORKER
 //#define IOUPT_SQ_WORKER
 //#define IOUPT_SQ_KTHREAD
 //#define IOUPT_FIXED
@@ -72,7 +76,7 @@ struct io_uring_pt {
 #error "IOUPT_SQ_KTHREAD & IOUPT_SQ_WORKER can't be both defined!"
 #endif
 
-#ifdef IOUPT_SQ_WORKER
+#if defined(IOUPT_SQ_WORKER) || defined(IOUPT_CQ_WORKER)
 static struct workqueue_struct *virtblk_iouring_workqueue;
 #endif
 
@@ -96,6 +100,7 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 		if (!sqe) {
 			return -EAGAIN;
 		}
+		iou_pt->req_submitted++;
 
 		for (i = 0; i < sg_num; i++) {
 			phys_addr_t base = iou_pt->phy_offset + sg_phys(sg);
@@ -127,6 +132,8 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 				return -EAGAIN;
 			}
 
+			iou_pt->req_submitted++;
+
 			if (direction == WRITE)
 				io_uring_prep_rw(IORING_OP_WRITE_FIXED, sqe, 0,
 					 (void *)base, sg->length,
@@ -148,6 +155,8 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 		sqe = io_uring_get_sqe(&iou_pt->ring);
 		if (!sqe)
 			return -EAGAIN;
+		iou_pt->req_submitted++;
+
 		io_uring_prep_fsync(sqe, 0, IORING_FSYNC_DATASYNC);
 		sqe->flags |= IOSQE_FIXED_FILE;
 #ifdef IOUPT_FIXED
@@ -157,6 +166,10 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 	}
 
 	io_uring_submit(&iou_pt->ring);
+
+#ifdef IOUPT_SQ_WORKER
+	queue_work(virtblk_iouring_workqueue, &iou_pt->cq_work);
+#endif
 
 	return 0;
 }
@@ -213,6 +226,7 @@ static void virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 		if (!cqe)
 			break;
 
+		iou_pt->req_completed++;
 		vbr = io_uring_cqe_get_data(cqe);
 
 		vbr->status = VIRTIO_BLK_S_OK;
@@ -374,6 +388,17 @@ static void virtblk_iouring_sq_work(struct work_struct *work)
 }
 #endif
 
+#ifdef IOUPT_CQ_WORKER
+static void virtblk_iouring_cq_work(struct work_struct *work)
+{
+	struct io_uring_pt *iou_pt =
+		container_of(work, struct io_uring_pt, cq_work);
+
+	while (iou_pt->req_submitted != iou_pt->req_completed)
+		virtblk_iouring_cq_poll(iou_pt);
+}
+#endif
+
 static int virtblk_iouring_init(struct io_uring_pt *iou_pt)
 {
 	void *mr_base;
@@ -411,7 +436,7 @@ static int virtblk_iouring_init(struct io_uring_pt *iou_pt)
 				      "io_uring kthread_sq");
 	if (IS_ERR(iou_pt->kthread_sq)) {
 		ret = PTR_ERR(iou_pt->kthread_sq);
-		goto out_kthread;
+		goto out;
 	}
 #endif
 
@@ -419,35 +444,44 @@ static int virtblk_iouring_init(struct io_uring_pt *iou_pt)
 	iou_pt->sq_tail = 0;
 	iou_pt->sq_reqs_size = REQ_MAX_ENTRIES;
 
-#ifdef IOUPT_SQ_WORKER
+#if defined(IOUPT_SQ_WORKER) || defined(IOUPT_CQ_WORKER)
 	virtblk_iouring_workqueue = alloc_workqueue("io_uring wq", 0, 0);
 	if (!virtblk_iouring_workqueue) {
 		ret = -ENOMEM;
-		goto out_kthread;
+		goto out;
 	}
+#endif
 
+#ifdef IOUPT_SQ_WORKER
 	INIT_WORK(&iou_pt->sq_work, virtblk_iouring_sq_work);
 #endif
 
+#ifdef IOUPT_CQ_WORKER
+	INIT_WORK(&iou_pt->cq_work, virtblk_iouring_cq_work);
+#endif
+
 	return 0;
-#ifdef IOUPT_SQ_WORKER
-out_kthread_sq:
-	kthread_stop(iou_pt->kthread_sq);
-#endif
-#ifdef IOUPT_SQ_KTHREAD_DEDICATED
-out_kthread:
-	kthread_stop(iou_pt->kthread);
-#endif
 out:
+	if (iou_pt->kthread_sq)
+		kthread_stop(iou_pt->kthread);
+
+	if (iou_pt->kthread)
+		kthread_stop(iou_pt->kthread);
 	release_mem_region(IO_URING_MR_BASE, IO_URING_MR_SIZE);
 	return ret;
 }
 
 static void virtblk_iouring_fini(struct io_uring_pt *iou_pt)
 {
+#ifdef IOUPT_CQ_WORKER
+	flush_work(&iou_pt->cq_work);
+#endif
+
 #ifdef IOUPT_SQ_WORKER
 	flush_work(&iou_pt->sq_work);
+#endif
 
+#if defined(IOUPT_SQ_WORKER) || defined(IOUPT_CQ_WORKER)
 	destroy_workqueue(virtblk_iouring_workqueue);
 #endif
 
