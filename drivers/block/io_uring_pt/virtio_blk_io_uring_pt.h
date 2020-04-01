@@ -64,8 +64,8 @@ struct io_uring_pt {
 	uint64_t req_completed;
 };
 
-//#define IOUPT_CQ_KTHREAD
-#define IOUPT_CQ_WORKER
+#define IOUPT_CQ_KTHREAD
+//#define IOUPT_CQ_WORKER
 //#define IOUPT_SQ_WORKER
 //#define IOUPT_SQ_KTHREAD
 //#define IOUPT_FIXED
