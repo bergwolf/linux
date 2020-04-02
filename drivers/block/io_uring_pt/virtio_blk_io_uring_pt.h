@@ -15,6 +15,8 @@
 #define IO_URING_MR_SIZE        (1<<20)
 #define IO_URING_DB_SIZE        1024
 
+#define VIRTIO_BLK_PCI_SHMCAP_ID_IOUPT 0
+
 #define REQ_MAX_ENTRIES		128
 
 /*
@@ -71,6 +73,7 @@ struct io_uring_pt {
 //#define IOUPT_FIXED
 //#define IOUPT_SQ_KTHREAD_DEDICATED
 #define IOUPT_MEMREMAP
+#define IOUPT_PCI_SHM
 
 #if defined(IOUPT_SQ_KTHREAD) && defined(IOUPT_SQ_WORKER)
 #error "IOUPT_SQ_KTHREAD & IOUPT_SQ_WORKER can't be both defined!"
@@ -399,19 +402,40 @@ static void virtblk_iouring_cq_work(struct work_struct *work)
 }
 #endif
 
-static int virtblk_iouring_init(struct io_uring_pt *iou_pt)
+static int virtblk_iouring_init(struct virtio_device *vdev,
+				struct io_uring_pt *iou_pt)
 {
+	resource_size_t mr_phy_base;
+	size_t mr_size;
 	void *mr_base;
 	int ret;
 
-#ifdef IOUPT_MEMREMAP
-	mr_base = memremap(IO_URING_MR_BASE, IO_URING_MR_SIZE, MEMREMAP_WB);
-#else
-	if (request_mem_region(IO_URING_MR_BASE, IO_URING_MR_SIZE,
-	                       "io_uring mr") == NULL)
-		return -EBUSY;
+#ifdef IOUPT_PCI_SHM
+	struct virtio_shm_region shm;
+	bool have_shm;
 
-	mr_base = (__force void *)ioremap_cache(IO_URING_MR_BASE, IO_URING_MR_SIZE);
+	have_shm = virtio_get_shm_region(vdev, &shm,
+					 (u8)VIRTIO_BLK_PCI_SHMCAP_ID_IOUPT);
+
+	if (!have_shm) {
+		dev_notice(&vdev->dev, "%s: No MEMBAR capability\n", __func__);
+		return -ENOMEM;
+	}
+
+	mr_phy_base = shm.addr;
+	mr_size = shm.len;
+#else
+	mr_phy_base = IO_URING_MR_BASE;
+	mr_size = IO_URING_MR_SIZE;
+#endif
+
+#ifdef IOUPT_MEMREMAP
+	mr_base = memremap(mr_phy_base, mr_size, MEMREMAP_WB);
+#else
+	//if (request_mem_region(mr_phy_base, mr_size, "io_uring mr") == NULL)
+	//	return -EBUSY;
+
+	mr_base = (__force void *)ioremap_cache(mr_phy_base, mr_size);
 #endif
 	if (mr_base == NULL) {
 		ret = -ENOMEM;
@@ -467,7 +491,6 @@ out:
 
 	if (iou_pt->kthread)
 		kthread_stop(iou_pt->kthread);
-	release_mem_region(IO_URING_MR_BASE, IO_URING_MR_SIZE);
 	return ret;
 }
 

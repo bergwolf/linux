@@ -970,7 +970,7 @@ static int virtblk_probe(struct virtio_device *vdev)
 	vblk->kthread = NULL;
 
 	if (virtio_has_feature(vdev, VIRTIO_BLK_F_IO_URING)) {
-		err = virtblk_iouring_init(&vblk->iou_pt);
+		err = virtblk_iouring_init(vdev, &vblk->iou_pt);
 		if (err)
 			goto out_free_tags;
 
