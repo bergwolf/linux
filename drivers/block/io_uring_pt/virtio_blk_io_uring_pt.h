@@ -66,7 +66,7 @@ struct io_uring_pt {
 	uint64_t req_completed;
 };
 
-#define IOUPT_CQ_KTHREAD
+//#define IOUPT_CQ_KTHREAD
 //#define IOUPT_CQ_WORKER
 //#define IOUPT_SQ_WORKER
 //#define IOUPT_SQ_KTHREAD
@@ -211,16 +211,11 @@ static void virtblk_iouring_sq_poll(struct io_uring_pt *iou_pt)
 }
 #endif
 
-static void virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
+static bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 {
 	struct io_uring_cqe *cqe;
 	bool req_done = false;
 
-#if 0
-	if (!(*iou_pt->ring.cq.ktail - *iou_pt->ring.cq.khead)) {
-		return;
-	}
-#endif
 	while (io_uring_cq_ready(&iou_pt->ring)) {
 		struct virtblk_req *vbr;
 		struct request *req;
@@ -252,8 +247,9 @@ static void virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 
 	/* In case queue is stopped waiting for more buffers. */
 	if (req_done)
-		blk_mq_start_stopped_hw_queues(iou_pt->disk->queue,
-					       true);
+		blk_mq_start_stopped_hw_queues(iou_pt->disk->queue, true);
+
+	return req_done;
 }
 
 static int virtio_blk_iourint_pt_kick(struct io_uring *ring, unsigned submitted,

@@ -209,6 +209,12 @@ static int virtblk_poll(struct blk_mq_hw_ctx *hctx)
 	struct virtio_blk *vblk = hctx->queue->queuedata;
 	struct virtqueue *vq = vblk->vqs[hctx->queue_num].vq;
 
+#ifdef VIRTIO_BLK_IOURING
+	if (vblk->iou_pt.enabled) {
+		return virtblk_iouring_cq_poll(&vblk->iou_pt);
+	}
+#endif /* VIRTIO_BLK_IOURING */
+
 	if (!virtqueue_more_used(vq))
 		return 0;
 
