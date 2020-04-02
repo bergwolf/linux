@@ -208,17 +208,20 @@ static int virtblk_poll(struct blk_mq_hw_ctx *hctx)
 {
 	struct virtio_blk *vblk = hctx->queue->queuedata;
 	struct virtqueue *vq = vblk->vqs[hctx->queue_num].vq;
+	int ret = 0;
 
 #ifdef VIRTIO_BLK_IOURING
 	if (vblk->iou_pt.enabled) {
-		return virtblk_iouring_cq_poll(&vblk->iou_pt);
+		ret += virtblk_iouring_cq_poll(&vblk->iou_pt);
 	}
 #endif /* VIRTIO_BLK_IOURING */
 
 	if (!virtqueue_more_used(vq))
-		return 0;
+		return ret;
 
-	return virtblk_complete_requests(vq);
+	ret += virtblk_complete_requests(vq);
+
+	return ret;
 }
 
 static void virtblk_done(struct virtqueue *vq)

@@ -64,9 +64,11 @@ struct io_uring_pt {
 	int sq_tail;
 	uint64_t req_submitted;
 	uint64_t req_completed;
+	spinlock_t cq_lock;
 };
 
-//#define IOUPT_CQ_KTHREAD
+#define IOUPT_CQ_KTHREAD
+#define IOUPT_CQ_KTHREAD_SLEEP
 //#define IOUPT_CQ_WORKER
 //#define IOUPT_SQ_WORKER
 //#define IOUPT_SQ_KTHREAD
@@ -221,6 +223,12 @@ static bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 {
 	struct io_uring_cqe *cqe;
 	bool req_done = false;
+	unsigned long flags;
+
+	if (!io_uring_cq_ready(&iou_pt->ring))
+		return false;
+
+	spin_lock_irqsave(&iou_pt->cq_lock, flags);
 
 	while (io_uring_cq_ready(&iou_pt->ring)) {
 		struct virtblk_req *vbr;
@@ -256,6 +264,8 @@ static bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 	/* In case queue is stopped waiting for more buffers. */
 	if (req_done)
 		blk_mq_start_stopped_hw_queues(iou_pt->disk->queue, true);
+
+	spin_unlock_irqrestore(&iou_pt->cq_lock, flags);
 
 	return req_done;
 }
@@ -310,8 +320,12 @@ static int iou_pt_kthread(void *data)
 
 		virtblk_iouring_cq_poll(iou_pt);
 
+#ifdef IOUPT_CQ_KTHREAD_SLEEP
+		msleep(10);
+#else
 		//cpu_relax();
 		cond_resched();
+#endif
 	}
 
 	return 0;
