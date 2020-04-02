@@ -103,7 +103,9 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 		if (!sqe) {
 			return -EAGAIN;
 		}
+#ifdef IOUPT_CQ_WORKER
 		iou_pt->req_submitted++;
+#endif
 
 		for (i = 0; i < sg_num; i++) {
 			phys_addr_t base = iou_pt->phy_offset + sg_phys(sg);
@@ -135,7 +137,9 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 				return -EAGAIN;
 			}
 
+#ifdef IOUPT_CQ_WORKER
 			iou_pt->req_submitted++;
+#endif
 
 			if (direction == WRITE)
 				io_uring_prep_rw(IORING_OP_WRITE_FIXED, sqe, 0,
@@ -158,7 +162,9 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 		sqe = io_uring_get_sqe(&iou_pt->ring);
 		if (!sqe)
 			return -EAGAIN;
+#ifdef IOUPT_CQ_WORKER
 		iou_pt->req_submitted++;
+#endif
 
 		io_uring_prep_fsync(sqe, 0, IORING_FSYNC_DATASYNC);
 		sqe->flags |= IOSQE_FIXED_FILE;
@@ -224,8 +230,11 @@ static bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 		if (!cqe)
 			break;
 
+#ifdef IOUPT_CQ_WORKER
 		iou_pt->req_completed++;
+#endif
 		vbr = io_uring_cqe_get_data(cqe);
+		io_uring_cqe_seen(&iou_pt->ring, cqe);
 
 		vbr->status = VIRTIO_BLK_S_OK;
 		if (cqe->res < 0) {
@@ -241,7 +250,6 @@ static bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 
 		req = blk_mq_rq_from_pdu(vbr);
 		blk_mq_complete_request(req);
-		io_uring_cqe_seen(&iou_pt->ring, cqe);
 		req_done = true;
 	}
 
