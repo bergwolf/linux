@@ -215,7 +215,7 @@ static int io_uring_submit(struct io_uring *ring)
 	unsigned __next = (sq)->sqe_tail + 1;				\
 	struct io_uring_sqe *__sqe = NULL;				\
 									\
-	if (__next - __head <= *(sq)->kring_entries) {			\
+	if (likely(__next - __head <= *(sq)->kring_entries)) {			\
 		__sqe = &(sq)->sqes[(sq)->sqe_tail & *(sq)->kring_mask];\
 		(sq)->sqe_tail = __next;				\
 	}								\
@@ -233,8 +233,8 @@ static struct io_uring_sqe *io_uring_get_sqe(struct io_uring *ring)
 {
 	struct io_uring_sq *sq = &ring->sq;
 
-	if (!(ring->flags & IORING_SETUP_SQPOLL))
-		return __io_uring_get_sqe(sq, sq->sqe_head);
+	//if (!(ring->flags & IORING_SETUP_SQPOLL))
+	//	return __io_uring_get_sqe(sq, sq->sqe_head);
 
 	return __io_uring_get_sqe(sq, io_uring_smp_load_acquire(sq->khead));
 }
@@ -555,8 +555,8 @@ static int __io_uring_peek_cqe(struct io_uring *ring, struct io_uring_cqe **cqe_
 	do {
 		io_uring_for_each_cqe(ring, head, cqe)
 			break;
-		if (cqe) {
-			if (cqe->user_data == LIBURING_UDATA_TIMEOUT) {
+		if (likely(cqe)) {
+			if (unlikely(cqe->user_data == LIBURING_UDATA_TIMEOUT)) {
 				if (cqe->res < 0)
 					err = cqe->res;
 				io_uring_cq_advance(ring, 1);
@@ -624,7 +624,7 @@ static inline int io_uring_wait_cqe_nr(struct io_uring *ring,
 	int err;
 
 	err = __io_uring_peek_cqe(ring, cqe_ptr);
-	if (err || *cqe_ptr)
+	if (likely(err || *cqe_ptr))
 		return err;
 
 	return __io_uring_get_cqe(ring, cqe_ptr, 0, wait_nr, NULL);

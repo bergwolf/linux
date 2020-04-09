@@ -359,13 +359,13 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 #ifdef VIRTIO_BLK_IOURING
 	vbr->vec = (void *)vbr + sizeof(struct scatterlist) * vblk->sg_elems;
 
-	if (vblk->iou_pt.enabled && (type == 0 || type == VIRTIO_BLK_T_FLUSH)) {
+	if (likely(vblk->iou_pt.enabled && (type == 0 || type == VIRTIO_BLK_T_FLUSH))) {
 		uint64_t offset = type ? 0 : (u64)blk_rq_pos(req) << SECTOR_SHIFT;
 		/* Use io_uring for read/write and flush */
 		err = virtblk_iouring_add_req(&vblk->iou_pt, vbr,
 					      rq_data_dir(req), type, num,
 					      offset);
-		if (err) {
+		if (unlikely(err)) {
 			blk_mq_stop_hw_queue(hctx);
 			spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
 

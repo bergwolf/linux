@@ -91,18 +91,18 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 {
 	struct io_uring_sqe *sqe;
 
-	if (sg_num) {
+	if (likely(sg_num)) {
 		struct scatterlist *sg = vbr->sg;
 		phys_addr_t vec_phys;
 		int i;
 
-		if (type & VIRTIO_BLK_T_FLUSH)
+		if (unlikely(type & VIRTIO_BLK_T_FLUSH))
 			printk("VIRTIO_BLK_T_FLUSH define with data!!!!\n");
 
 		vec_phys = iou_pt->phy_offset + virt_to_phys(vbr->vec);
 #ifndef IOUPT_FIXED
 		sqe = io_uring_get_sqe(&iou_pt->ring);
-		if (!sqe) {
+		if (unlikely(!sqe)) {
 			return -EAGAIN;
 		}
 #ifdef IOUPT_CQ_WORKER
@@ -134,7 +134,7 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 			phys_addr_t base = iou_pt->phy_offset + sg_phys(sg);
 
 			sqe = io_uring_get_sqe(&iou_pt->ring);
-			if (!sqe) {
+			if (unlikely(!sqe)) {
 				printk("AAAAAAAAAAAAAA\n");
 				return -EAGAIN;
 			}
@@ -160,9 +160,9 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 #endif
 	}
 
-	if (type & VIRTIO_BLK_T_FLUSH) {
+	if (unlikely(type & VIRTIO_BLK_T_FLUSH)) {
 		sqe = io_uring_get_sqe(&iou_pt->ring);
-		if (!sqe)
+		if (unlikely(!sqe))
 			return -EAGAIN;
 #ifdef IOUPT_CQ_WORKER
 		iou_pt->req_submitted++;
@@ -225,17 +225,17 @@ static bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 	bool req_done = false;
 	unsigned long flags;
 
-	if (!io_uring_cq_ready(&iou_pt->ring))
+	if (unlikely(!io_uring_cq_ready(&iou_pt->ring)))
 		return false;
 
 	spin_lock_irqsave(&iou_pt->cq_lock, flags);
 
-	while (io_uring_cq_ready(&iou_pt->ring)) {
+	while (likely(io_uring_cq_ready(&iou_pt->ring))) {
 		struct virtblk_req *vbr;
 		struct request *req;
 
 		io_uring_peek_cqe(&iou_pt->ring, &cqe);
-		if (!cqe)
+		if (unlikely(!cqe))
 			break;
 
 #ifdef IOUPT_CQ_WORKER
@@ -245,7 +245,7 @@ static bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 		io_uring_cqe_seen(&iou_pt->ring, cqe);
 
 		vbr->status = VIRTIO_BLK_S_OK;
-		if (cqe->res < 0) {
+		if (unlikely(cqe->res < 0)) {
 			printk("cq_poll ERROR- vbr: %p res: %d\n", vbr, cqe->res);
 			vbr->status = VIRTIO_BLK_S_IOERR;
 		}
@@ -262,7 +262,7 @@ static bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 	}
 
 	/* In case queue is stopped waiting for more buffers. */
-	if (req_done)
+	if (likely(req_done))
 		blk_mq_start_stopped_hw_queues(iou_pt->disk->queue, true);
 
 	spin_unlock_irqrestore(&iou_pt->cq_lock, flags);
