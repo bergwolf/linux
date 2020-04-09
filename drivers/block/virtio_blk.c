@@ -211,8 +211,10 @@ static int virtblk_poll(struct blk_mq_hw_ctx *hctx)
 	int ret = 0;
 
 #ifdef VIRTIO_BLK_IOURING
-	if (vblk->iou_pt.enabled) {
-		ret += virtblk_iouring_cq_poll(&vblk->iou_pt);
+	if (likely(vblk->iou_pt.enabled)) {
+		ret = virtblk_iouring_cq_poll(&vblk->iou_pt);
+		if (likely(ret != 0))
+			return ret;
 	}
 #endif /* VIRTIO_BLK_IOURING */
 
