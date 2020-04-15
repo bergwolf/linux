@@ -357,7 +357,10 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 	spin_lock_irqsave(&vblk->vqs[qid].lock, flags);
 
 #ifdef VIRTIO_BLK_IOURING
+
+#ifndef IOUPT_HACK_IOVEC
 	vbr->vec = (void *)vbr + sizeof(struct scatterlist) * vblk->sg_elems;
+#endif
 
 	if (likely(vblk->iou_pt.enabled && (type == 0 || type == VIRTIO_BLK_T_FLUSH))) {
 		uint64_t offset = type ? 0 : (u64)blk_rq_pos(req) << SECTOR_SHIFT;
@@ -1025,6 +1028,10 @@ static int virtblk_probe(struct virtio_device *vdev)
 
 		vblk->iou_pt.enabled = true;
 		vblk->iou_pt.disk = vblk->disk;
+#ifdef IOUPT_HACK_IOVEC
+		vblk->iou_pt.iov = kmalloc_array(sg_elems, sizeof(struct iovec), GFP_KERNEL);
+		vblk->iou_pt.iov_phy = vblk->iou_pt.phy_offset + virt_to_phys(vblk->iou_pt.iov);
+#endif
 	}
 
 	if (virtio_has_feature(vdev, VIRTIO_BLK_F_KTHREAD)) {

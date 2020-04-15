@@ -65,6 +65,8 @@ struct io_uring_pt {
 	uint64_t req_submitted;
 	uint64_t req_completed;
 	spinlock_t cq_lock;
+	struct iovec *iov;
+	phys_addr_t iov_phy;
 };
 
 #define IOUPT_CQ_KTHREAD
@@ -76,6 +78,7 @@ struct io_uring_pt {
 //#define IOUPT_SQ_KTHREAD_DEDICATED
 #define IOUPT_MEMREMAP
 #define IOUPT_PCI_SHM
+//#define IOUPT_HACK_IOVEC // only for latency, it works only with iodepth=1
 
 #if defined(IOUPT_SQ_KTHREAD) && defined(IOUPT_SQ_WORKER)
 #error "IOUPT_SQ_KTHREAD & IOUPT_SQ_WORKER can't be both defined!"
@@ -99,7 +102,6 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 		if (unlikely(type & VIRTIO_BLK_T_FLUSH))
 			printk("VIRTIO_BLK_T_FLUSH define with data!!!!\n");
 
-		vec_phys = iou_pt->phy_offset + virt_to_phys(vbr->vec);
 #ifndef IOUPT_FIXED
 		sqe = io_uring_get_sqe(&iou_pt->ring);
 		if (unlikely(!sqe)) {
@@ -109,12 +111,23 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 		iou_pt->req_submitted++;
 #endif
 
+#ifndef IOUPT_HACK_IOVEC
+		vec_phys = iou_pt->phy_offset + virt_to_phys(vbr->vec);
 		for (i = 0; i < sg_num; i++) {
 			phys_addr_t base = iou_pt->phy_offset + sg_phys(sg);
 			vbr->vec[i].iov_base = (void *)base;
 			vbr->vec[i].iov_len = sg->length;
 			sg = sg_next(sg);
 		}
+#else
+		vec_phys = iou_pt->iov_phy;
+		for (i = 0; i < sg_num; i++) {
+			phys_addr_t base = iou_pt->phy_offset + sg_phys(sg);
+			iou_pt->iov[i].iov_base = (void *)base;
+			iou_pt->iov[i].iov_len = sg->length;
+			sg = sg_next(sg);
+		}
+#endif
 
 		if (direction == WRITE)
 			io_uring_prep_rw(IORING_OP_WRITEV, sqe, 0,
