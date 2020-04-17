@@ -35,6 +35,7 @@ struct virtio_blk_iouring {
 	uint64_t sqcq_offset;
 	uint64_t sqes_offset;
 	uint64_t kick_offset;
+	uint64_t userspace;
 	struct io_uring_params params;
 	struct virtio_blk_iouring_enter enter;
 };
@@ -93,6 +94,9 @@ static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
 		unsigned int sg_num, uint64_t offset)
 {
 	struct io_uring_sqe *sqe;
+
+	if (unlikely(iou_pt->vbi->userspace != 0))
+		return -EAGAIN;
 
 	if (likely(sg_num)) {
 		struct scatterlist *sg = vbr->sg;
@@ -239,6 +243,9 @@ static bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 	unsigned long flags;
 
 	if (unlikely(!io_uring_cq_ready(&iou_pt->ring)))
+		return false;
+
+	if (unlikely(iou_pt->vbi->userspace != 0))
 		return false;
 
 	spin_lock_irqsave(&iou_pt->cq_lock, flags);
@@ -402,6 +409,8 @@ static int io_uring_queue_mmap(struct io_uring_pt *iou_pt,
 	iou_pt->phy_offset = vbi->phy_offset;
 	iou_pt->kick_addr = mr_base + vbi->kick_offset;
 
+	vbi->userspace = 0;
+
 	printk("mr_base %px kick_offset %llu kick_addr %px\n",
 	        mr_base, vbi->kick_offset, iou_pt->kick_addr);
 
@@ -472,6 +481,8 @@ static int virtblk_iouring_init(struct virtio_device *vdev,
 		ret = -ENOMEM;
 		goto out;
 	}
+
+	printk("mr_phy_base 0x%llx mr_base %px\n", mr_phy_base, mr_base);
 
 	ret = io_uring_queue_mmap(iou_pt, mr_base);
 	if (ret)
