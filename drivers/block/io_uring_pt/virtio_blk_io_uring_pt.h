@@ -89,7 +89,7 @@ struct io_uring_pt {
 static struct workqueue_struct *virtblk_iouring_workqueue;
 #endif
 
-static int virtblk_iouring_queue_req(struct io_uring_pt *iou_pt,
+static int virtblk_iouring_submit_rq(struct io_uring_pt *iou_pt,
 		struct virtblk_req *vbr, int direction, uint32_t type,
 		unsigned int sg_num, uint64_t offset)
 {
@@ -218,7 +218,7 @@ static void virtblk_iouring_sq_poll(struct io_uring_pt *iou_pt)
 
 		sq_req = &iou_pt->sq_reqs[sq_tail];
 
-		ret = virtblk_iouring_queue_req(iou_pt, sq_req->vbr,
+		ret = virtblk_iouring_submit_rq(iou_pt, sq_req->vbr,
 						sq_req->direction, sq_req->type,
 						sq_req->sg_num, sq_req->offset);
 		if (ret != 0) {
@@ -290,7 +290,7 @@ static bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 	return req_done;
 }
 
-static int virtio_blk_iourint_pt_kick(struct io_uring *ring, unsigned submitted,
+static int virtblk_iouring_kick(struct io_uring *ring, unsigned submitted,
 				       unsigned wait_nr, unsigned flags)
 {
 	struct io_uring_pt *iou_pt =
@@ -308,7 +308,7 @@ static int virtio_blk_iourint_pt_kick(struct io_uring *ring, unsigned submitted,
 }
 
 #ifdef IOUPT_SQ_KTHREAD_DEDICATED
-static int iou_pt_kthread_sq(void *data)
+static int virtblk_iouring_kthread_sq(void *data)
 {
 	struct io_uring_pt *iou_pt = (struct io_uring_pt *)data;
 
@@ -326,7 +326,7 @@ static int iou_pt_kthread_sq(void *data)
 #endif
 
 #if defined(IOUPT_CQ_KTHREAD) || defined(IOUPT_SQ_KTHREAD)
-static int iou_pt_kthread(void *data)
+static int virtblk_iouring_kthread(void *data)
 {
 	struct io_uring_pt *iou_pt = (struct io_uring_pt *)data;
 
@@ -489,8 +489,8 @@ static int virtblk_iouring_init(struct virtio_device *vdev,
 		goto out;
 
 #if defined(IOUPT_CQ_KTHREAD) || defined(IOUPT_SQ_KTHREAD)
-	iou_pt->kthread = kthread_run(iou_pt_kthread, iou_pt,
-				      "io_uring kthread");
+	iou_pt->kthread = kthread_run(virtblk_iouring_kthread, iou_pt,
+				      "virtblk io_uring kthread");
 	if (IS_ERR(iou_pt->kthread)) {
 		ret = PTR_ERR(iou_pt->kthread);
 		goto out;
@@ -498,8 +498,8 @@ static int virtblk_iouring_init(struct virtio_device *vdev,
 #endif
 
 #ifdef IOUPT_SQ_KTHREAD_DEDICATED
-	iou_pt->kthread_sq = kthread_run(iou_pt_kthread_sq, iou_pt,
-				      "io_uring kthread_sq");
+	iou_pt->kthread_sq = kthread_run(virtblk_iouring_kthread_sq, iou_pt,
+					 "virtblk io_uring kthread_sq");
 	if (IS_ERR(iou_pt->kthread_sq)) {
 		ret = PTR_ERR(iou_pt->kthread_sq);
 		goto out;
@@ -588,7 +588,7 @@ static int virtblk_iouring_add_req(struct io_uring_pt *iou_pt,
 #endif
 	return 0;
 #else
-	return virtblk_iouring_queue_req(iou_pt, vbr, direction, type,
+	return virtblk_iouring_submit_rq(iou_pt, vbr, direction, type,
 					 sg_num, offset);
 #endif /* defined(IOUPT_SQ_WORKER) || defined(IOUPT_SQ_KTHREAD) */
 
