@@ -16,24 +16,11 @@
 #include <linux/blk-mq-virtio.h>
 #include <linux/numa.h>
 #include <uapi/linux/virtio_ring.h>
+#include <linux/kthread.h>
 
-#define VIRTIO_BLK_IOURING
-
-struct virtblk_req {
-	struct virtio_blk_outhdr out_hdr;
-	u8 status;
-#ifdef VIRTIO_BLK_IOURING
-	struct iovec *vec;
-#endif /* VIRTIO_BLK_IOURING */
-	struct scatterlist sg[];
-};
-
-#ifdef VIRTIO_BLK_IOURING
-#include "io_uring_pt/virtio_blk_io_uring_pt.h"
-#endif /* VIRTIO_BLK_IOURING */
+#include "virtio_blk_common.h"
 
 #define PART_BITS 4
-#define VQ_NAME_LEN 16
 #define MAX_DISCARD_SEGMENTS 256u
 
 static int major;
@@ -211,8 +198,8 @@ static int virtblk_poll(struct blk_mq_hw_ctx *hctx)
 	int ret = 0;
 
 #ifdef VIRTIO_BLK_IOURING
-	if (likely(vblk->iou_pt.enabled)) {
-		ret = virtblk_iouring_cq_poll(&vblk->iou_pt);
+	if (likely(vblk->iou_pt)) {
+		ret = virtblk_iouring_cq_poll(vblk->iou_pt);
 		if (likely(ret != 0))
 			return ret;
 	}
@@ -284,8 +271,8 @@ static void virtio_commit_rqs(struct blk_mq_hw_ctx *hctx)
 
 	spin_lock_irq(&vq->lock);
 #ifdef VIRTIO_BLK_IOURING
-	if (vblk->iou_pt.enabled)
-		io_uring_submit(&vblk->iou_pt.ring);
+	if (vblk->iou_pt)
+		virtblk_iouring_commit_rqs(vblk->iou_pt);
 #endif /* VIRTIO_BLK_IOURING */
 	kick = virtqueue_kick_prepare(vq->vq);
 	spin_unlock_irq(&vq->lock);
@@ -362,10 +349,10 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 	vbr->vec = (void *)vbr + sizeof(struct scatterlist) * vblk->sg_elems;
 #endif
 
-	if (likely(vblk->iou_pt.enabled && (type == 0 || type == VIRTIO_BLK_T_FLUSH))) {
+	if (likely(vblk->iou_pt && (type == 0 || type == VIRTIO_BLK_T_FLUSH))) {
 		uint64_t offset = type ? 0 : (u64)blk_rq_pos(req) << SECTOR_SHIFT;
 		/* Use io_uring for read/write and flush */
-		err = virtblk_iouring_add_req(&vblk->iou_pt, vbr,
+		err = virtblk_iouring_add_req(vblk->iou_pt, vbr,
 					      rq_data_dir(req), type, num,
 					      offset);
 		if (unlikely(err)) {
@@ -385,7 +372,7 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 
 		/* should we serialize it? */
 		//if (notify)
-		//	io_uring_submit(&vblk->iou_pt.ring);
+		//	virtblk_iouring_commit_rqs(vblk->iou_pt);
 
 		return BLK_STS_OK;
 	}
@@ -1018,20 +1005,13 @@ static int virtblk_probe(struct virtio_device *vdev)
 	}
 
 #ifdef VIRTIO_BLK_IOURING
-	vblk->iou_pt.enabled = false;
+	vblk->iou_pt = NULL;
 	vblk->kthread = NULL;
 
 	if (virtio_has_feature(vdev, VIRTIO_BLK_F_IO_URING)) {
-		err = virtblk_iouring_init(vdev, &vblk->iou_pt);
+		err = virtblk_iouring_init(vblk);
 		if (err)
 			goto out_free_tags;
-
-		vblk->iou_pt.enabled = true;
-		vblk->iou_pt.disk = vblk->disk;
-#ifdef IOUPT_HACK_IOVEC
-		vblk->iou_pt.iov = kmalloc_array(sg_elems, sizeof(struct iovec), GFP_KERNEL);
-		vblk->iou_pt.iov_phy = vblk->iou_pt.phy_offset + virt_to_phys(vblk->iou_pt.iov);
-#endif
 	}
 
 	if (virtio_has_feature(vdev, VIRTIO_BLK_F_KTHREAD)) {
@@ -1071,8 +1051,8 @@ static void virtblk_remove(struct virtio_device *vdev)
 	/* Make sure no work handler is accessing the device. */
 	flush_work(&vblk->config_work);
 
-	if (vblk->iou_pt.enabled)
-		virtblk_iouring_fini(&vblk->iou_pt);
+	if (vblk->iou_pt)
+		virtblk_iouring_fini(vblk);
 
 	if (vblk->kthread)
 		kthread_stop(vblk->kthread);
