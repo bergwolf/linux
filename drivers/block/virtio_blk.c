@@ -297,6 +297,11 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 
 	BUG_ON(req->nr_phys_segments + 2 > vblk->sg_elems);
 
+#ifdef VIRTIO_BLK_IOURING
+	if (likely(vblk->iou_pt))
+		return virtblk_iouring_queue_rq(vblk, vbr, req, hctx);
+#endif
+
 	switch (req_op(req)) {
 	case REQ_OP_READ:
 	case REQ_OP_WRITE:
@@ -342,41 +347,6 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 	}
 
 	spin_lock_irqsave(&vblk->vqs[qid].lock, flags);
-
-#ifdef VIRTIO_BLK_IOURING
-
-#ifndef IOUPT_HACK_IOVEC
-	vbr->vec = (void *)vbr + sizeof(struct scatterlist) * vblk->sg_elems;
-#endif
-
-	if (likely(vblk->iou_pt && (type == 0 || type == VIRTIO_BLK_T_FLUSH))) {
-		uint64_t offset = type ? 0 : (u64)blk_rq_pos(req) << SECTOR_SHIFT;
-		/* Use io_uring for read/write and flush */
-		err = virtblk_iouring_add_req(vblk->iou_pt, vbr,
-					      rq_data_dir(req), type, num,
-					      offset);
-		if (unlikely(err)) {
-			blk_mq_stop_hw_queue(hctx);
-			spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
-
-			printk("virtblk_iouring_add_req - err %d\n", err);
-			if (err == -ENOMEM || err == -EAGAIN)
-				return BLK_STS_DEV_RESOURCE;
-			return BLK_STS_IOERR;
-		}
-
-		//if (bd->last)
-		//	notify = true;
-
-		spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
-
-		/* should we serialize it? */
-		//if (notify)
-		//	virtblk_iouring_commit_rqs(vblk->iou_pt);
-
-		return BLK_STS_OK;
-	}
-#endif /* VIRTIO_BLK_IOURING */
 
 	/* TODO how to handle multiple hipri and non-hipri requests at the same time? */
 	if (req->cmd_flags & REQ_HIPRI)

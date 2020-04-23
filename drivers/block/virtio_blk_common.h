@@ -16,6 +16,7 @@ struct virtblk_req {
 	u8 status;
 #ifdef VIRTIO_BLK_IOURING
 	struct iovec *vec;
+	u8 sub_requests;
 #endif /* VIRTIO_BLK_IOURING */
 	struct scatterlist sg[];
 };

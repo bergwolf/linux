@@ -445,13 +445,6 @@ static inline void io_uring_prep_files_update(struct io_uring_sqe *sqe,
 	io_uring_prep_rw(IORING_OP_FILES_UPDATE, sqe, -1, fds, nr_fds, offset);
 }
 
-static inline void io_uring_prep_fallocate(struct io_uring_sqe *sqe, int fd,
-					   int mode, off_t offset, off_t len)
-{
-	io_uring_prep_rw(IORING_OP_FALLOCATE, sqe, fd, (const void *) len, mode,
-				offset);
-}
-
 static inline void io_uring_prep_openat(struct io_uring_sqe *sqe, int dfd,
 					const char *path, int flags, mode_t mode)
 {
@@ -459,6 +452,13 @@ static inline void io_uring_prep_openat(struct io_uring_sqe *sqe, int dfd,
 	sqe->open_flags = flags;
 }
 #endif
+static inline void io_uring_prep_fallocate(struct io_uring_sqe *sqe, int fd,
+					   int mode, off_t offset, off_t len)
+{
+	io_uring_prep_rw(IORING_OP_FALLOCATE, sqe, fd, (const void *) len, mode,
+				offset);
+}
+
 static inline void io_uring_prep_close(struct io_uring_sqe *sqe, int fd)
 {
 	io_uring_prep_rw(IORING_OP_CLOSE, sqe, fd, NULL, 0, 0);
