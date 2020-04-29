@@ -526,6 +526,8 @@ static int virtblk_iouring_queue_rq_discard_write_zeroes(
 		}
 
 		io_uring_prep_fallocate(sqe, 0, mode, offset, len);
+		sqe->flags |= IOSQE_FIXED_FILE;
+
 		io_uring_sqe_set_data(sqe, vbr);
 		vbr->sub_requests++;
 	}
