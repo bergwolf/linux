@@ -128,6 +128,10 @@ static int vp_request_msix_vectors(struct virtio_device *vdev, int nvectors,
 	if (desc) {
 		flags |= PCI_IRQ_AFFINITY;
 		desc->pre_vectors++; /* virtio config vector */
+
+		/* XXX-ste: HACK virtio extra vector */
+		if(desc->post_vectors)
+			nvectors += desc->post_vectors;
 	}
 
 	err = pci_alloc_irq_vectors_affinity(vp_dev->pci_dev, nvectors,

@@ -199,9 +199,7 @@ static int virtblk_poll(struct blk_mq_hw_ctx *hctx)
 
 #ifdef VIRTIO_BLK_IOURING
 	if (likely(vblk->iou_pt)) {
-		ret = virtblk_iouring_cq_poll(vblk->iou_pt);
-		if (likely(ret != 0))
-			return ret;
+		return virtblk_iouring_cq_poll(vblk->iou_pt);
 	}
 #endif /* VIRTIO_BLK_IOURING */
 
@@ -271,8 +269,10 @@ static void virtio_commit_rqs(struct blk_mq_hw_ctx *hctx)
 
 	spin_lock_irq(&vq->lock);
 #ifdef VIRTIO_BLK_IOURING
-	if (vblk->iou_pt)
+	if (likely(vblk->iou_pt)) {
 		virtblk_iouring_commit_rqs(vblk->iou_pt);
+		return;
+	}
 #endif /* VIRTIO_BLK_IOURING */
 	kick = virtqueue_kick_prepare(vq->vq);
 	spin_unlock_irq(&vq->lock);
@@ -603,6 +603,12 @@ static int init_vq(struct virtio_blk *vblk)
 		snprintf(vblk->vqs[i].name, VQ_NAME_LEN, "req.%d", i);
 		names[i] = vblk->vqs[i].name;
 	}
+
+#ifdef VIRTIO_BLK_IOURING
+	if (virtio_has_feature(vdev, VIRTIO_BLK_F_IO_URING)) {
+		desc.post_vectors++; /* HACK virtio extra vector */
+	}
+#endif
 
 	/* Discover virtqueues and write information to configuration.  */
 	err = virtio_find_vqs(vdev, num_vqs, vqs, callbacks, names, &desc);
@@ -980,8 +986,10 @@ static int virtblk_probe(struct virtio_device *vdev)
 
 	if (virtio_has_feature(vdev, VIRTIO_BLK_F_IO_URING)) {
 		err = virtblk_iouring_init(vblk);
-		if (err)
+		if (err) {
+			vblk->iou_pt = NULL;
 			goto out_free_tags;
+		}
 	}
 
 	if (virtio_has_feature(vdev, VIRTIO_BLK_F_KTHREAD)) {
@@ -989,6 +997,7 @@ static int virtblk_probe(struct virtio_device *vdev)
 					    "vblk kthread");
 		if (IS_ERR(vblk->kthread)) {
 			err = PTR_ERR(vblk->kthread);
+			vblk->kthread = NULL;
 			goto out_free_tags;
 		}
 	}

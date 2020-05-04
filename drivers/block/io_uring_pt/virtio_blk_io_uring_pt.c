@@ -24,6 +24,7 @@
 
 #include "virtio_blk_io_uring_pt.h"
 #include "../virtio_blk_common.h"
+#include "../../virtio/virtio_pci_common.h"
 
 #include <uapi/linux/io_uring.h>
 #include "liburing.h"
@@ -36,8 +37,8 @@
 
 #define REQ_MAX_ENTRIES		128
 
-#define IOUPT_CQ_KTHREAD
-#define IOUPT_CQ_KTHREAD_SLEEP
+//#define IOUPT_CQ_KTHREAD
+//#define IOUPT_CQ_KTHREAD_SLEEP
 //#define IOUPT_FIXED
 #define IOUPT_MEMREMAP
 #define IOUPT_PCI_SHM
@@ -64,6 +65,7 @@ struct virtio_blk_iouring {
 	uint64_t sqcq_offset;
 	uint64_t sqes_offset;
 	uint64_t kick_offset;
+	uint32_t vector;
 	struct io_uring_params params;
 	struct virtio_blk_iouring_enter enter;
 	char serial_id[VIRTIO_BLK_ID_BYTES];
@@ -247,8 +249,20 @@ static int io_uring_queue_mmap(struct io_uring_pt *iou_pt,
 			     p, &ring->sq, &ring->cq);
 }
 
+static irqreturn_t virtblk_iouring_interrupt(int irq, void *opaque)
+{
+	struct virtio_blk *vblk = opaque;
+
+	//printk("interrupt - irq %d\n", irq);
+
+	virtblk_iouring_cq_poll(vblk->iou_pt);
+
+	return IRQ_HANDLED;
+}
+
 int virtblk_iouring_init(struct virtio_blk *vblk)
 {
+	struct virtio_pci_device *vp_dev = to_vp_device(vblk->vdev);
 #ifdef IOUPT_PCI_SHM
 	struct virtio_shm_region shm;
 	bool have_shm;
@@ -303,6 +317,16 @@ int virtblk_iouring_init(struct virtio_blk *vblk)
 	ret = io_uring_queue_mmap(vblk->iou_pt, mr_base);
 	if (ret)
 		goto out;
+
+	printk("request_irq - vector: %d\n", vblk->iou_pt->vbi->vector);
+	ret = request_irq(pci_irq_vector(vp_dev->pci_dev,
+					 vblk->iou_pt->vbi->vector),
+			  virtblk_iouring_interrupt, 0, "virtblk-iou-irq",
+			  vblk);
+	if (ret) {
+		printk("request_irq failed: %d\n", ret);
+		goto out;
+	}
 
 #if defined(IOUPT_CQ_KTHREAD)
 	vblk->iou_pt->kthread = kthread_run(virtblk_iouring_kthread, vblk->iou_pt,
