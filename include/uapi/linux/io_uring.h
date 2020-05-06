@@ -196,7 +196,6 @@ struct io_sqring_offsets {
  * sq_ring->flags
  */
 #define IORING_SQ_NEED_WAKEUP	(1U << 0) /* needs io_uring_enter wakeup */
-#define IORING_CQ_NEED_WAKEUP	(1U << 1) /* XXX-ste: move to CQ ring */
 
 struct io_cqring_offsets {
 	__u32 head;
@@ -205,8 +204,15 @@ struct io_cqring_offsets {
 	__u32 ring_entries;
 	__u32 overflow;
 	__u32 cqes;
-	__u64 resv[2];
+	__u32 flags;
+	__u32 resv1;
+	__u64 resv2;
 };
+
+/*
+ * cq_ring->flags
+ */
+#define IORING_CQ_NEED_WAKEUP	(1U << 0) /* XXX-ste: move to CQ ring */
 
 /*
  * io_uring_enter(2) flags
@@ -238,7 +244,12 @@ struct io_uring_params {
 #define IORING_FEAT_SUBMIT_STABLE	(1U << 2)
 #define IORING_FEAT_RW_CUR_POS		(1U << 3)
 #define IORING_FEAT_CUR_PERSONALITY	(1U << 4)
+<<<<<<< HEAD
 #define IORING_FEAT_FAST_POLL		(1U << 5)
+||||||| constructed merge base
+=======
+#define IORING_FEAT_CQ_FLAGS		(1U << 5)
+>>>>>>> io_uring: add CQ flag field and feature
 
 /*
  * io_uring_register(2) opcodes and arguments

@@ -142,7 +142,7 @@ struct io_rings {
 	 */
 	u32			sq_dropped;
 	/*
-	 * Runtime flags
+	 * Runtime SQ flags
 	 *
 	 * Written by the kernel, shouldn't be modified by the
 	 * application.
@@ -151,6 +151,16 @@ struct io_rings {
 	 * for IORING_SQ_NEED_WAKEUP after updating the sq tail.
 	 */
 	u32			sq_flags;
+	/*
+	 * Runtime CQ flags
+	 *
+	 * Written by the application, shouldn't be modified by the
+	 * kernel.
+	 *
+	 * The kernel needs a full memory barrier before checking
+	 * for IORING_CQ_NEED_WAKEUP after updating the cq tail.
+	 */
+	u32			cq_flags;
 	/*
 	 * Number of completion events lost because the queue was full;
 	 * this should be avoided by the application by making sure
@@ -1145,7 +1155,7 @@ static inline bool io_should_trigger_evfd(struct io_ring_ctx *ctx)
 {
 	if (!ctx->cq_ev_fd)
 		return false;
-	if (!(READ_ONCE(ctx->rings->sq_flags) & IORING_CQ_NEED_WAKEUP))
+	if (!(READ_ONCE(ctx->rings->cq_flags) & IORING_CQ_NEED_WAKEUP))
 		return false;
 	if (!ctx->eventfd_async)
 		return true;
@@ -7678,7 +7688,7 @@ static int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 	rings->cq_ring_mask = p->cq_entries - 1;
 	rings->sq_ring_entries = p->sq_entries;
 	rings->cq_ring_entries = p->cq_entries;
-	rings->sq_flags |= IORING_CQ_NEED_WAKEUP; /* XXX-ste: backward compatibility */
+	rings->cq_flags |= IORING_CQ_NEED_WAKEUP; /* XXX-ste: backward compatibility */
 	ctx->sq_mask = rings->sq_ring_mask;
 	ctx->cq_mask = rings->cq_ring_mask;
 	ctx->sq_entries = rings->sq_ring_entries;
@@ -7836,6 +7846,7 @@ static int io_uring_create(unsigned entries, struct io_uring_params *p,
 	p->cq_off.ring_entries = offsetof(struct io_rings, cq_ring_entries);
 	p->cq_off.overflow = offsetof(struct io_rings, cq_overflow);
 	p->cq_off.cqes = offsetof(struct io_rings, cqes);
+	p->cq_off.flags = offsetof(struct io_rings, cq_flags);
 
 	p->features = IORING_FEAT_SINGLE_MMAP | IORING_FEAT_NODROP |
 			IORING_FEAT_SUBMIT_STABLE | IORING_FEAT_RW_CUR_POS |
@@ -7852,6 +7863,10 @@ static int io_uring_create(unsigned entries, struct io_uring_params *p,
 	ret = io_uring_get_fd(ctx);
 	if (ret < 0)
 		goto err;
+
+	p->features = IORING_FEAT_SINGLE_MMAP | IORING_FEAT_NODROP |
+			IORING_FEAT_SUBMIT_STABLE | IORING_FEAT_RW_CUR_POS |
+			IORING_FEAT_CUR_PERSONALITY | IORING_FEAT_CQ_FLAGS;
 
 	trace_io_uring_create(ret, ctx, p->sq_entries, p->cq_entries, p->flags);
 	return ret;
