@@ -1145,6 +1145,8 @@ static inline bool io_should_trigger_evfd(struct io_ring_ctx *ctx)
 {
 	if (!ctx->cq_ev_fd)
 		return false;
+	if (!(READ_ONCE(ctx->rings->sq_flags) & IORING_CQ_NEED_WAKEUP))
+		return false;
 	if (!ctx->eventfd_async)
 		return true;
 	return io_wq_current_is_worker();
@@ -7676,6 +7678,7 @@ static int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 	rings->cq_ring_mask = p->cq_entries - 1;
 	rings->sq_ring_entries = p->sq_entries;
 	rings->cq_ring_entries = p->cq_entries;
+	rings->sq_flags |= IORING_CQ_NEED_WAKEUP; /* XXX-ste: backward compatibility */
 	ctx->sq_mask = rings->sq_ring_mask;
 	ctx->cq_mask = rings->cq_ring_mask;
 	ctx->sq_entries = rings->sq_ring_entries;

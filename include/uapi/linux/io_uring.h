@@ -196,6 +196,7 @@ struct io_sqring_offsets {
  * sq_ring->flags
  */
 #define IORING_SQ_NEED_WAKEUP	(1U << 0) /* needs io_uring_enter wakeup */
+#define IORING_CQ_NEED_WAKEUP	(1U << 1) /* XXX-ste: move to CQ ring */
 
 struct io_cqring_offsets {
 	__u32 head;
