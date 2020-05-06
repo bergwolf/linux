@@ -261,6 +261,12 @@ struct io_ring_ctx {
 
 		wait_queue_head_t	inflight_wait;
 		struct io_uring_sqe	*sq_sqes;
+
+		struct eventfd_ctx	*sq_kick_ev_fd;
+		wait_queue_entry_t	sq_kick_wait;
+		poll_table		sq_kick_pt;
+		//struct work_struct 	sq_kick_work;
+
 	} ____cacheline_aligned_in_smp;
 
 	struct io_rings	*rings;
@@ -7210,6 +7216,98 @@ static int io_eventfd_unregister(struct io_ring_ctx *ctx)
 	return -ENXIO;
 }
 
+static int io_kickfd_wakeup(wait_queue_entry_t *wait, unsigned mode, int sync,
+			     void *key)
+{
+	struct io_ring_ctx *ctx =
+		container_of(wait, struct io_ring_ctx, sq_kick_wait);
+	__poll_t events = key_to_poll(key);
+
+	if (events & EPOLLIN) {
+		if (ctx->flags & IORING_SETUP_SQPOLL) {
+			if (!list_empty_careful(&ctx->cq_overflow_list))
+				io_cqring_overflow_flush(ctx, false);
+
+			wake_up(&ctx->sqo_wait);
+		}
+		// TODO: if SQPOLL is not enabled can we queue a work?
+	}
+
+	return 0;
+}
+
+static void io_kickfd_ptable_queue_proc(struct file *file,
+					 wait_queue_head_t *wqh,
+					 poll_table *pt)
+{
+	struct io_ring_ctx *ctx =
+		container_of(pt, struct io_ring_ctx, sq_kick_pt);
+	add_wait_queue(wqh, &ctx->sq_kick_wait);
+}
+
+static int io_kickfd_register(struct io_ring_ctx *ctx, void __user *arg)
+{
+	__s32 __user *fds = arg;
+	__poll_t events;
+	struct fd f;
+	int fd;
+
+	if (ctx->sq_kick_ev_fd)
+		return -EBUSY;
+
+	if (copy_from_user(&fd, fds, sizeof(*fds)))
+		return -EFAULT;
+
+	ctx->sq_kick_ev_fd = eventfd_ctx_fdget(fd);
+	if (IS_ERR(ctx->sq_kick_ev_fd)) {
+		int ret = PTR_ERR(ctx->sq_kick_ev_fd);
+		ctx->sq_kick_ev_fd = NULL;
+		return ret;
+	}
+
+	f = fdget(fd);
+
+	/*
+	 * Install our own custom wake-up handling so we are notified via
+	 * a callback whenever someone signals the underlying eventfd.
+	 */
+	init_waitqueue_func_entry(&ctx->sq_kick_wait, io_kickfd_wakeup);
+	init_poll_funcptr(&ctx->sq_kick_pt, io_kickfd_ptable_queue_proc);
+
+	events = vfs_poll(f.file, &ctx->sq_kick_pt);
+
+	/*
+	 * Check if there was an event already pending on the eventfd
+	 * before we registered and trigger it as if we didn't miss it.
+	 */
+	if (events & EPOLLIN) {
+		if (ctx->flags & IORING_SETUP_SQPOLL) {
+			if (!list_empty_careful(&ctx->cq_overflow_list))
+				io_cqring_overflow_flush(ctx, false);
+
+			wake_up(&ctx->sqo_wait);
+		}
+	}
+
+	fdput(f);
+
+	return 0;
+}
+
+static int io_kickfd_unregister(struct io_ring_ctx *ctx)
+{
+	if (ctx->sq_kick_ev_fd) {
+		u64 cnt;
+		eventfd_ctx_remove_wait_queue(ctx->sq_kick_ev_fd,
+					      &ctx->sq_kick_wait, &cnt);
+		eventfd_ctx_put(ctx->sq_kick_ev_fd);
+		ctx->sq_kick_ev_fd = NULL;
+		return 0;
+	}
+
+	return -ENXIO;
+}
+
 static int __io_destroy_buffers(int id, void *p, void *data)
 {
 	struct io_ring_ctx *ctx = data;
@@ -7235,6 +7333,7 @@ static void io_ring_ctx_free(struct io_ring_ctx *ctx)
 	io_sqe_buffer_unregister(ctx);
 	io_sqe_files_unregister(ctx);
 	io_eventfd_unregister(ctx);
+	io_kickfd_unregister(ctx);
 	io_destroy_buffers(ctx);
 	idr_destroy(&ctx->personality_idr);
 
@@ -8060,6 +8159,18 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 		if (arg || nr_args)
 			break;
 		ret = io_eventfd_unregister(ctx);
+		break;
+	case IORING_REGISTER_KICKFD:
+		ret = -EINVAL;
+		if (nr_args != 1)
+			break;
+		ret = io_kickfd_register(ctx, arg);
+		break;
+	case IORING_UNREGISTER_KICKFD:
+		ret = -EINVAL;
+		if (arg || nr_args)
+			break;
+		ret = io_kickfd_unregister(ctx);
 		break;
 	case IORING_REGISTER_PROBE:
 		ret = -EINVAL;
