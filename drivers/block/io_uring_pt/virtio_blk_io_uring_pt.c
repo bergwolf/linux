@@ -94,10 +94,40 @@ struct io_uring_pt {
 #endif
 };
 
+bool iouring_cq_notify_enabled(struct io_uring *ring)
+{
+	return IO_URING_READ_ONCE(*ring->sq.kflags) & IORING_CQ_NEED_WAKEUP;
+}
+
+void iouring_cq_notify_disable(struct io_uring *ring)
+{
+	*ring->sq.kflags &= ~IORING_CQ_NEED_WAKEUP;
+}
+
+bool iouring_cq_notify_enable(struct io_uring *ring)
+{
+	*ring->sq.kflags |= IORING_CQ_NEED_WAKEUP;
+	/* make sure to read CQ tail after writing flags */
+	io_uring_barrier();
+
+	return !io_uring_cq_ready(ring);
+}
+
+void virtblk_iouring_submit(struct io_uring *ring, struct request *req)
+{
+	/* TODO how to handle multiple hipri and non-hipri requests at the same time? */
+	if (req->cmd_flags & REQ_HIPRI)
+		iouring_cq_notify_disable(ring);
+	else
+		iouring_cq_notify_enable(ring);
+
+	io_uring_submit(ring);
+}
+
 bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 {
 	struct io_uring_cqe *cqe;
-	bool req_done = false;
+	bool req_done = false, disable_notify;
 	unsigned long flags;
 
 	if (unlikely(!io_uring_cq_ready(&iou_pt->ring)))
@@ -108,30 +138,39 @@ bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 
 	spin_lock_irqsave(&iou_pt->cq_lock, flags);
 
-	while (likely(io_uring_cq_ready(&iou_pt->ring))) {
-		struct virtblk_req *vbr;
-		struct request *req;
+	disable_notify = iouring_cq_notify_enabled(&iou_pt->ring);
 
-		io_uring_peek_cqe(&iou_pt->ring, &cqe);
-		if (unlikely(!cqe))
-			break;
+	do {
+		if (disable_notify)
+			iouring_cq_notify_disable(&iou_pt->ring);
 
-		vbr = io_uring_cqe_get_data(cqe);
-		io_uring_cqe_seen(&iou_pt->ring, cqe);
+		while (likely(io_uring_cq_ready(&iou_pt->ring))) {
+			struct virtblk_req *vbr;
+			struct request *req;
 
-		vbr->status = VIRTIO_BLK_S_OK;
-		if (unlikely(cqe->res < 0)) {
-			printk("cq_poll ERROR- vbr: %p res: %d\n", vbr, cqe->res);
-			vbr->status = VIRTIO_BLK_S_IOERR;
+			io_uring_peek_cqe(&iou_pt->ring, &cqe);
+			if (unlikely(!cqe))
+				break;
+
+			vbr = io_uring_cqe_get_data(cqe);
+			io_uring_cqe_seen(&iou_pt->ring, cqe);
+
+			vbr->status = VIRTIO_BLK_S_OK;
+			if (unlikely(cqe->res < 0)) {
+				printk("cq_poll ERROR- vbr: %p res: %d\n",
+				       vbr, cqe->res);
+				vbr->status = VIRTIO_BLK_S_IOERR;
+			}
+
+			if (--vbr->sub_requests > 0)
+				continue;
+
+			req = blk_mq_rq_from_pdu(vbr);
+			blk_mq_complete_request(req);
+			req_done = true;
 		}
 
-		if (--vbr->sub_requests > 0)
-			continue;
-
-		req = blk_mq_rq_from_pdu(vbr);
-		blk_mq_complete_request(req);
-		req_done = true;
-	}
+	} while (disable_notify & !iouring_cq_notify_enable(&iou_pt->ring));
 
 	/* In case queue is stopped waiting for more buffers. */
 	if (likely(req_done))
@@ -471,7 +510,7 @@ static int virtblk_iouring_queue_rq_io(struct virtio_blk *vblk,
 	}
 #endif
 
-	io_uring_submit(&iou_pt->ring);
+	virtblk_iouring_submit(&iou_pt->ring, req);
 
 out:
 	spin_unlock_irqrestore(&iou_pt->sq_lock, flags);
@@ -479,7 +518,8 @@ out:
 }
 
 static int virtblk_iouring_queue_rq_flush(struct virtio_blk *vblk,
-					  struct virtblk_req *vbr)
+					  struct virtblk_req *vbr,
+					  struct request *req)
 {
 	struct io_uring_pt *iou_pt = vblk->iou_pt;
 	struct io_uring_sqe *sqe;
@@ -500,7 +540,7 @@ static int virtblk_iouring_queue_rq_flush(struct virtio_blk *vblk,
 	io_uring_sqe_set_data(sqe, vbr);
 	vbr->sub_requests = 1;
 
-	io_uring_submit(&iou_pt->ring);
+	virtblk_iouring_submit(&iou_pt->ring, req);
 
 out:
 	spin_unlock_irqrestore(&iou_pt->sq_lock, flags);
@@ -556,7 +596,7 @@ static int virtblk_iouring_queue_rq_discard_write_zeroes(
 		vbr->sub_requests++;
 	}
 
-	io_uring_submit(&iou_pt->ring);
+	virtblk_iouring_submit(&iou_pt->ring, req);
 
 out:
 	spin_unlock_irqrestore(&iou_pt->sq_lock, flags);
@@ -603,7 +643,7 @@ blk_status_t virtblk_iouring_queue_rq(struct virtio_blk *vblk,
 		err = virtblk_iouring_queue_rq_io(vblk, vbr, req, hctx);
 		break;
 	case REQ_OP_FLUSH:
-		err = virtblk_iouring_queue_rq_flush(vblk, vbr);
+		err = virtblk_iouring_queue_rq_flush(vblk, vbr, req);
 		break;
 	case REQ_OP_DISCARD:
 		err = virtblk_iouring_queue_rq_discard_write_zeroes(vblk, vbr,
