@@ -96,17 +96,26 @@ struct io_uring_pt {
 
 bool iouring_cq_notify_enabled(struct io_uring *ring)
 {
-	return IO_URING_READ_ONCE(*ring->sq.kflags) & IORING_CQ_NEED_WAKEUP;
+	if (unlikely(!ring->cq.kflags))
+		return true;
+
+	return IO_URING_READ_ONCE(*ring->cq.kflags) & IORING_CQ_NEED_WAKEUP;
 }
 
 void iouring_cq_notify_disable(struct io_uring *ring)
 {
-	*ring->sq.kflags &= ~IORING_CQ_NEED_WAKEUP;
+	if (unlikely(!ring->cq.kflags))
+		return;
+
+	*ring->cq.kflags &= ~IORING_CQ_NEED_WAKEUP;
 }
 
 bool iouring_cq_notify_enable(struct io_uring *ring)
 {
-	*ring->sq.kflags |= IORING_CQ_NEED_WAKEUP;
+	if (unlikely(!ring->cq.kflags))
+		return true;
+
+	*ring->cq.kflags |= IORING_CQ_NEED_WAKEUP;
 	/* make sure to read CQ tail after writing flags */
 	io_uring_barrier();
 
@@ -240,7 +249,7 @@ static int io_uring_mmap(void *sqcq, void* sqes,
 	if (p->features & IORING_FEAT_SINGLE_MMAP) {
 		cq->ring_ptr = sq->ring_ptr;
 	} else {
-		printk("IORING_FEAT_SINGLE_MMAP needed!");
+		printk("IORING_FEAT_SINGLE_MMAP needed!\n");
 		return -EINVAL;
 	}
 
@@ -261,6 +270,14 @@ static int io_uring_mmap(void *sqcq, void* sqes,
 	cq->kring_entries = cq->ring_ptr + p->cq_off.ring_entries;
 	cq->koverflow = cq->ring_ptr + p->cq_off.overflow;
 	cq->cqes = cq->ring_ptr + p->cq_off.cqes;
+	if (p->features & IORING_FEAT_CQ_FLAGS) {
+		cq->kflags = cq->ring_ptr + p->sq_off.flags;
+	} else {
+		cq->kflags = NULL;
+		printk("IORING_FEAT_CQ_FLAGS needed!\n");
+	}
+
+
 	return 0;
 }
 
