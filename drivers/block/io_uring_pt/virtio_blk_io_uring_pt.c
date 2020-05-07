@@ -204,7 +204,8 @@ static int virtblk_iouring_kick(struct io_uring *ring, unsigned submitted,
 
 	iowrite32(1, iou_pt->kick_addr);
 
-	return ioread32(iou_pt->kick_addr + 4);
+	//return ioread32(iou_pt->kick_addr + 4);
+	return submitted;
 }
 
 #if defined(IOUPT_CQ_KTHREAD)
