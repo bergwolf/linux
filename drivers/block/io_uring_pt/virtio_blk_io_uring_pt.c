@@ -1,6 +1,3 @@
-#ifndef _VIRTIO_BLK_IO_URING_PT_H
-#define _VIRTIO_BLK_IO_URING_PT_H
-
 #include <linux/spinlock.h>
 #include <linux/slab.h>
 #include <linux/blkdev.h>
@@ -693,4 +690,4 @@ blk_status_t virtblk_iouring_queue_rq(struct virtio_blk *vblk,
 	return BLK_STS_OK;
 }
 
-#endif /* _VIRTIO_BLK_IO_URING_PT_H */
+MODULE_LICENSE("GPL");
