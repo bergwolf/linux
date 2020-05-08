@@ -194,7 +194,7 @@ static int virtblk_iouring_kick(struct io_uring *ring, unsigned submitted,
 	struct io_uring_pt *iou_pt =
 		container_of(ring, struct io_uring_pt, ring);
 
-	printk("kick - submitted %u wait_nr %u flags %u\n", submitted, wait_nr, flags);
+	//printk("kick - submitted %u wait_nr %u flags %u\n", submitted, wait_nr, flags);
 
 	iou_pt->vbi->enter.to_submit = submitted;
 	iou_pt->vbi->enter.min_complete = wait_nr;
