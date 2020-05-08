@@ -91,7 +91,7 @@ struct io_uring_pt {
 #endif
 };
 
-bool iouring_cq_notify_enabled(struct io_uring *ring)
+static bool iouring_cq_notify_enabled(struct io_uring *ring)
 {
 	if (unlikely(!ring->cq.kflags))
 		return true;
@@ -99,7 +99,7 @@ bool iouring_cq_notify_enabled(struct io_uring *ring)
 	return IO_URING_READ_ONCE(*ring->cq.kflags) & IORING_CQ_NEED_WAKEUP;
 }
 
-void iouring_cq_notify_disable(struct io_uring *ring)
+static void iouring_cq_notify_disable(struct io_uring *ring)
 {
 	if (unlikely(!ring->cq.kflags))
 		return;
@@ -107,7 +107,7 @@ void iouring_cq_notify_disable(struct io_uring *ring)
 	*ring->cq.kflags &= ~IORING_CQ_NEED_WAKEUP;
 }
 
-bool iouring_cq_notify_enable(struct io_uring *ring)
+static bool iouring_cq_notify_enable(struct io_uring *ring)
 {
 	if (unlikely(!ring->cq.kflags))
 		return true;
@@ -119,7 +119,7 @@ bool iouring_cq_notify_enable(struct io_uring *ring)
 	return !io_uring_cq_ready(ring);
 }
 
-void virtblk_iouring_submit(struct io_uring *ring, struct request *req)
+static void virtblk_iouring_submit(struct io_uring *ring, struct request *req)
 {
 	/* TODO how to handle multiple hipri and non-hipri requests at the same time? */
 	if (req->cmd_flags & REQ_HIPRI)
@@ -186,6 +186,7 @@ bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 
 	return req_done;
 }
+EXPORT_SYMBOL_GPL(virtblk_iouring_cq_poll);
 
 static int virtblk_iouring_kick(struct io_uring *ring, unsigned submitted,
 				       unsigned wait_nr, unsigned flags)
@@ -404,6 +405,7 @@ out:
 	vblk->iou_pt = NULL;
 	return ret;
 }
+EXPORT_SYMBOL_GPL(virtblk_iouring_init);
 
 void virtblk_iouring_fini(struct virtio_blk *vblk)
 {
@@ -413,6 +415,7 @@ void virtblk_iouring_fini(struct virtio_blk *vblk)
 	kfree(vblk->iou_pt);
 	vblk->iou_pt = NULL;
 }
+EXPORT_SYMBOL_GPL(virtblk_iouring_fini);
 
 void virtblk_iouring_commit_rqs(struct io_uring_pt *iou_pt)
 {
@@ -424,6 +427,7 @@ void virtblk_iouring_commit_rqs(struct io_uring_pt *iou_pt)
 
 	spin_unlock_irqrestore(&iou_pt->sq_lock, flags);
 }
+EXPORT_SYMBOL_GPL(virtblk_iouring_commit_rqs);
 
 static int virtblk_iouring_queue_rq_io(struct virtio_blk *vblk,
 				       struct virtblk_req *vbr,
@@ -689,5 +693,6 @@ blk_status_t virtblk_iouring_queue_rq(struct virtio_blk *vblk,
 
 	return BLK_STS_OK;
 }
+EXPORT_SYMBOL_GPL(virtblk_iouring_queue_rq);
 
 MODULE_LICENSE("GPL");
