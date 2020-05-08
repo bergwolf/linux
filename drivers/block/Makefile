@@ -28,7 +28,7 @@ obj-$(CONFIG_BLK_DEV_UMEM)	+= umem.o
 obj-$(CONFIG_BLK_DEV_NBD)	+= nbd.o
 obj-$(CONFIG_BLK_DEV_CRYPTOLOOP) += cryptoloop.o
 obj-$(CONFIG_VIRTIO_BLK)	+= virtio_blk.o
-virtio_blk-objs			:= io_uring_pt/virtio_blk_io_uring_pt.o
+virtio_blk-objs			:= virtio_blk_main.o io_uring_pt/virtio_blk_io_uring_pt.o
 
 obj-$(CONFIG_BLK_DEV_SX8)	+= sx8.o
 
