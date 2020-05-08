@@ -96,23 +96,34 @@ static bool iouring_cq_notify_enabled(struct io_uring *ring)
 	if (unlikely(!ring->cq.kflags))
 		return true;
 
-	return IO_URING_READ_ONCE(*ring->cq.kflags) & IORING_CQ_NEED_WAKEUP;
+	return !!(*ring->cq.kflags & IORING_CQ_NEED_WAKEUP);
 }
 
 static void iouring_cq_notify_disable(struct io_uring *ring)
 {
+	unsigned flags;
+
 	if (unlikely(!ring->cq.kflags))
 		return;
 
-	*ring->cq.kflags &= ~IORING_CQ_NEED_WAKEUP;
+	if (!(*ring->cq.kflags & IORING_CQ_NEED_WAKEUP))
+		return;
+
+	flags = *ring->cq.kflags & ~IORING_CQ_NEED_WAKEUP;
+
+	IO_URING_WRITE_ONCE(*ring->cq.kflags, flags);
 }
 
 static bool iouring_cq_notify_enable(struct io_uring *ring)
 {
+	unsigned flags;
+
 	if (unlikely(!ring->cq.kflags))
 		return true;
 
-	*ring->cq.kflags |= IORING_CQ_NEED_WAKEUP;
+	flags = *ring->cq.kflags | IORING_CQ_NEED_WAKEUP;
+
+	IO_URING_WRITE_ONCE(*ring->cq.kflags, flags);
 	/* make sure to read CQ tail after writing flags */
 	io_uring_barrier();
 
