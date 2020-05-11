@@ -1734,8 +1734,9 @@ static void io_iopoll_complete(struct io_ring_ctx *ctx, unsigned int *nr_events,
 	}
 
 	io_commit_cqring(ctx);
-	if (ctx->flags & IORING_SETUP_SQPOLL)
-		io_cqring_ev_posted(ctx);
+	//if (ctx->flags & IORING_SETUP_SQPOLL)
+	//	io_cqring_ev_posted(ctx);
+	io_cqring_ev_posted(ctx);
 	io_free_req_many(ctx, &rb);
 }
 
