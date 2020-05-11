@@ -149,7 +149,8 @@ static void virtblk_iouring_submit(struct io_uring_pt *iou_pt,
 		if (iouring_cq_notify_enabled(ring))
 			iouring_cq_notify_disable(ring);
 	} else {
-		if (!iouring_cq_notify_enabled(ring))
+		if (atomic_read(&iou_pt->submitted_hipri) == 0 &&
+		    !iouring_cq_notify_enabled(ring))
 			iouring_cq_notify_enable(ring);
 	}
 
