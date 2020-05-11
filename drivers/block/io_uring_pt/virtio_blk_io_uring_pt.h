@@ -8,7 +8,7 @@ struct io_uring_pt;
 
 int virtblk_iouring_init(struct virtio_blk *vblk);
 void virtblk_iouring_fini(struct virtio_blk *vblk);
-bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt);
+int virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt);
 void virtblk_iouring_commit_rqs(struct io_uring_pt *iou_pt);
 blk_status_t virtblk_iouring_queue_rq(struct virtio_blk *vblk,
 				      struct virtblk_req *vbr,

@@ -157,11 +157,12 @@ static void virtblk_iouring_submit(struct io_uring_pt *iou_pt,
 	io_uring_submit(ring);
 }
 
-bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
+int virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 {
 	struct io_uring_cqe *cqe;
-	bool req_done = false, disable_notify;
+	bool disable_notify;
 	unsigned long flags;
+	int req_done = 0;
 
 	if (unlikely(!io_uring_cq_ready(&iou_pt->ring)))
 		return false;
@@ -200,7 +201,7 @@ bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 
 			req = blk_mq_rq_from_pdu(vbr);
 			blk_mq_complete_request(req);
-			req_done = true;
+			req_done++;
 
 			if ((req->cmd_flags & REQ_HIPRI) &&
 			    (atomic_dec_and_test(&iou_pt->submitted_hipri)))
