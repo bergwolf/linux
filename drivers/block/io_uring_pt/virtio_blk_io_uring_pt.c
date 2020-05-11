@@ -106,24 +106,30 @@ static void iouring_cq_notify_disable(struct io_uring *ring)
 	if (unlikely(!ring->cq.kflags))
 		return;
 
-	if (!(*ring->cq.kflags & IORING_CQ_NEED_WAKEUP))
-		return;
-
 	flags = *ring->cq.kflags & ~IORING_CQ_NEED_WAKEUP;
 
 	IO_URING_WRITE_ONCE(*ring->cq.kflags, flags);
 }
 
-static bool iouring_cq_notify_enable(struct io_uring *ring)
+static void iouring_cq_notify_enable(struct io_uring *ring)
 {
 	unsigned flags;
 
 	if (unlikely(!ring->cq.kflags))
-		return true;
+		return;
 
 	flags = *ring->cq.kflags | IORING_CQ_NEED_WAKEUP;
 
 	IO_URING_WRITE_ONCE(*ring->cq.kflags, flags);
+}
+
+static bool iouring_cq_notify_enable_check(struct io_uring *ring)
+{
+	if (unlikely(!ring->cq.kflags))
+		return true;
+
+	iouring_cq_notify_enable(ring);
+
 	/* make sure to read CQ tail after writing flags */
 	io_uring_barrier();
 
@@ -133,10 +139,13 @@ static bool iouring_cq_notify_enable(struct io_uring *ring)
 static void virtblk_iouring_submit(struct io_uring *ring, struct request *req)
 {
 	/* TODO how to handle multiple hipri and non-hipri requests at the same time? */
-	if (req->cmd_flags & REQ_HIPRI)
-		iouring_cq_notify_disable(ring);
-	else
-		iouring_cq_notify_enable(ring);
+	if (req->cmd_flags & REQ_HIPRI) {
+		if (iouring_cq_notify_enabled(ring))
+			iouring_cq_notify_disable(ring);
+	} else {
+		if (!iouring_cq_notify_enabled(ring))
+			iouring_cq_notify_enable(ring);
+	}
 
 	io_uring_submit(ring);
 }
@@ -187,7 +196,8 @@ bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 			req_done = true;
 		}
 
-	} while (disable_notify & !iouring_cq_notify_enable(&iou_pt->ring));
+	} while (disable_notify &
+		 !iouring_cq_notify_enable_check(&iou_pt->ring));
 
 	/* In case queue is stopped waiting for more buffers. */
 	if (likely(req_done))
