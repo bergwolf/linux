@@ -89,6 +89,7 @@ struct io_uring_pt {
 	struct iovec *iov;
 	phys_addr_t iov_phy;
 #endif
+	atomic_t submitted_hipri;
 };
 
 static bool iouring_cq_notify_enabled(struct io_uring *ring)
@@ -136,10 +137,15 @@ static bool iouring_cq_notify_enable_check(struct io_uring *ring)
 	return !io_uring_cq_ready(ring);
 }
 
-static void virtblk_iouring_submit(struct io_uring *ring, struct request *req)
+static void virtblk_iouring_submit(struct io_uring_pt *iou_pt,
+				   struct request *req)
 {
+	struct io_uring *ring = &iou_pt->ring;
+
 	/* TODO how to handle multiple hipri and non-hipri requests at the same time? */
 	if (req->cmd_flags & REQ_HIPRI) {
+		atomic_inc(&iou_pt->submitted_hipri);
+
 		if (iouring_cq_notify_enabled(ring))
 			iouring_cq_notify_disable(ring);
 	} else {
@@ -194,6 +200,10 @@ bool virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 			req = blk_mq_rq_from_pdu(vbr);
 			blk_mq_complete_request(req);
 			req_done = true;
+
+			if ((req->cmd_flags & REQ_HIPRI) &&
+			    (atomic_dec_and_test(&iou_pt->submitted_hipri)))
+				disable_notify = true;
 		}
 
 	} while (disable_notify &
@@ -413,6 +423,7 @@ int virtblk_iouring_init(struct virtio_blk *vblk)
 	}
 #endif
 
+	atomic_set(&vblk->iou_pt->submitted_hipri, 0);
 
 #ifdef IOUPT_HACK_IOVEC
 	vblk->iou_pt->iov = kmalloc_array(vblk->sg_elems, sizeof(struct iovec), GFP_KERNEL);
@@ -550,7 +561,7 @@ static int virtblk_iouring_queue_rq_io(struct virtio_blk *vblk,
 	}
 #endif
 
-	virtblk_iouring_submit(&iou_pt->ring, req);
+	virtblk_iouring_submit(iou_pt, req);
 
 out:
 	spin_unlock_irqrestore(&iou_pt->sq_lock, flags);
@@ -580,7 +591,7 @@ static int virtblk_iouring_queue_rq_flush(struct virtio_blk *vblk,
 	io_uring_sqe_set_data(sqe, vbr);
 	vbr->sub_requests = 1;
 
-	virtblk_iouring_submit(&iou_pt->ring, req);
+	virtblk_iouring_submit(iou_pt, req);
 
 out:
 	spin_unlock_irqrestore(&iou_pt->sq_lock, flags);
@@ -636,7 +647,7 @@ static int virtblk_iouring_queue_rq_discard_write_zeroes(
 		vbr->sub_requests++;
 	}
 
-	virtblk_iouring_submit(&iou_pt->ring, req);
+	virtblk_iouring_submit(iou_pt, req);
 
 out:
 	spin_unlock_irqrestore(&iou_pt->sq_lock, flags);
