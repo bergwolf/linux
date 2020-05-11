@@ -208,8 +208,8 @@ int virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 				disable_notify = true;
 		}
 
-	} while (disable_notify &
-		 !iouring_cq_notify_enable_check(&iou_pt->ring));
+	} while (disable_notify && (atomic_read(&iou_pt->submitted_hipri) == 0)
+		 && !iouring_cq_notify_enable_check(&iou_pt->ring));
 
 	/* In case queue is stopped waiting for more buffers. */
 	if (likely(req_done))
