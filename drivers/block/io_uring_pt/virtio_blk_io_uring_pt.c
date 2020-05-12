@@ -20,7 +20,6 @@
 #include <linux/falloc.h>
 
 #include "../virtio_blk_common.h"
-#include "../../virtio/virtio_pci_common.h"
 
 #include "virtio_blk_io_uring_pt.h"
 #include <uapi/linux/io_uring.h>
@@ -40,7 +39,11 @@
 #define IOUPT_MEMREMAP
 #define IOUPT_PCI_SHM
 //#define IOUPT_HACK_IOVEC // only for latency, it works only with iodepth=1
+#define IOUPT_IRQ
 
+#ifdef IOUPT_IRQ
+#include "../../virtio/virtio_pci_common.h"
+#endif /* IOUPT_IRQ */
 
 /*
  * Shared with the host
@@ -92,6 +95,7 @@ struct io_uring_pt {
 	atomic_t submitted_hipri;
 };
 
+#ifdef IOUPT_IRQ
 static bool iouring_cq_notify_enabled(struct io_uring *ring)
 {
 	if (unlikely(!ring->cq.kflags))
@@ -136,12 +140,14 @@ static bool iouring_cq_notify_enable_check(struct io_uring *ring)
 
 	return !io_uring_cq_ready(ring);
 }
+#endif /* IOUPT_IRQ */
 
 static void virtblk_iouring_submit(struct io_uring_pt *iou_pt,
 				   struct request *req)
 {
 	struct io_uring *ring = &iou_pt->ring;
 
+#ifdef IOUPT_IRQ
 	/* TODO how to handle multiple hipri and non-hipri requests at the same time? */
 	if (req->cmd_flags & REQ_HIPRI) {
 		atomic_inc(&iou_pt->submitted_hipri);
@@ -153,6 +159,7 @@ static void virtblk_iouring_submit(struct io_uring_pt *iou_pt,
 		    !iouring_cq_notify_enabled(ring))
 			iouring_cq_notify_enable(ring);
 	}
+#endif /* IOUPT_IRQ */
 
 	io_uring_submit(ring);
 }
@@ -160,7 +167,9 @@ static void virtblk_iouring_submit(struct io_uring_pt *iou_pt,
 int virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 {
 	struct io_uring_cqe *cqe;
+#ifdef IOUPT_IRQ
 	bool disable_notify;
+#endif /* IOUPT_IRQ */
 	unsigned long flags;
 	int req_done = 0;
 
@@ -172,11 +181,13 @@ int virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 
 	spin_lock_irqsave(&iou_pt->cq_lock, flags);
 
+#ifdef IOUPT_IRQ
 	disable_notify = iouring_cq_notify_enabled(&iou_pt->ring);
 
 	do {
 		if (disable_notify)
 			iouring_cq_notify_disable(&iou_pt->ring);
+#endif /* IOUPT_IRQ */
 
 		while (likely(io_uring_cq_ready(&iou_pt->ring))) {
 			struct virtblk_req *vbr;
@@ -202,14 +213,16 @@ int virtblk_iouring_cq_poll(struct io_uring_pt *iou_pt)
 			req = blk_mq_rq_from_pdu(vbr);
 			blk_mq_complete_request(req);
 			req_done++;
-
+#ifndef IOUPT_IRQ
+		}
+#else /* IOUPT_IRQ */
 			if ((req->cmd_flags & REQ_HIPRI) &&
 			    (atomic_dec_and_test(&iou_pt->submitted_hipri)))
 				disable_notify = true;
 		}
-
 	} while (disable_notify && (atomic_read(&iou_pt->submitted_hipri) == 0)
 		 && !iouring_cq_notify_enable_check(&iou_pt->ring));
+#endif /* !IOUPT_IRQ */
 
 	/* In case queue is stopped waiting for more buffers. */
 	if (likely(req_done))
@@ -337,6 +350,7 @@ static int io_uring_queue_mmap(struct io_uring_pt *iou_pt,
 			     p, &ring->sq, &ring->cq);
 }
 
+#ifdef IOUPT_IRQ
 static irqreturn_t virtblk_iouring_interrupt(int irq, void *opaque)
 {
 	struct virtio_blk *vblk = opaque;
@@ -347,10 +361,13 @@ static irqreturn_t virtblk_iouring_interrupt(int irq, void *opaque)
 
 	return IRQ_HANDLED;
 }
+#endif /* IOUPT_IRQ */
 
 int virtblk_iouring_init(struct virtio_blk *vblk)
 {
+#ifdef IOUPT_IRQ
 	struct virtio_pci_device *vp_dev = to_vp_device(vblk->vdev);
+#endif /* IOUPT_IRQ */
 #ifdef IOUPT_PCI_SHM
 	struct virtio_shm_region shm;
 	bool have_shm;
@@ -406,6 +423,7 @@ int virtblk_iouring_init(struct virtio_blk *vblk)
 	if (ret)
 		goto out;
 
+#ifdef IOUPT_IRQ
 	printk("request_irq - vector: %d\n", vblk->iou_pt->vbi->vector);
 	ret = request_irq(pci_irq_vector(vp_dev->pci_dev,
 					 vblk->iou_pt->vbi->vector),
@@ -415,6 +433,7 @@ int virtblk_iouring_init(struct virtio_blk *vblk)
 		printk("request_irq failed: %d\n", ret);
 		goto out;
 	}
+#endif /* IOUPT_IRQ */
 
 #if defined(IOUPT_CQ_KTHREAD)
 	vblk->iou_pt->kthread = kthread_run(virtblk_iouring_kthread, vblk->iou_pt,
