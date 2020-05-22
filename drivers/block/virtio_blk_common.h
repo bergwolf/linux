@@ -1,6 +1,8 @@
 #ifndef _VIRTIO_BLK_COMMON_H
 #define _VIRTIO_BLK_COMMON_H
 
+#include <uapi/linux/uio.h>
+
 #define VIRTIO_BLK_IOURING
 
 #ifdef VIRTIO_BLK_IOURING
@@ -28,6 +30,15 @@ struct virtio_blk_vq {
 } ____cacheline_aligned_in_smp;
 
 struct virtio_blk {
+	/*
+	 * This mutex must be held by anything that may run after
+	 * virtblk_remove() sets vblk->vdev to NULL.
+	 *
+	 * blk-mq, virtqueue processing, and sysfs attribute code paths are
+	 * shut down before vblk->vdev is set to NULL and therefore do not need
+	 * to hold this mutex.
+	 */
+	struct mutex vdev_mutex;
 	struct virtio_device *vdev;
 
 	/* The disk structure for the kernel. */
@@ -38,6 +49,13 @@ struct virtio_blk {
 
 	/* Process context for config space updates */
 	struct work_struct config_work;
+
+	/*
+	 * Tracks references from block_device_operations open/release and
+	 * virtio_driver probe/remove so this object can be freed once no
+	 * longer in use.
+	 */
+	refcount_t refs;
 
 	/* What host tells us, plus 2 for header & tailer. */
 	unsigned int sg_elems;
