@@ -7966,7 +7966,7 @@ static int io_uring_create(unsigned entries, struct io_uring_params *p,
 
 	p->features = IORING_FEAT_SINGLE_MMAP | IORING_FEAT_NODROP |
 			IORING_FEAT_SUBMIT_STABLE | IORING_FEAT_RW_CUR_POS |
-			IORING_FEAT_CUR_PERSONALITY | IORING_FEAT_CQ_FLAGS;
+			IORING_FEAT_CUR_PERSONALITY | IORING_FEAT_FAST_POLL;
 
 	trace_io_uring_create(ret, ctx, p->sq_entries, p->cq_entries, p->flags);
 	return ret;

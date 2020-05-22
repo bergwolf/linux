@@ -315,11 +315,11 @@ static int io_uring_mmap(void *sqcq, void* sqes,
 	cq->kring_entries = cq->ring_ptr + p->cq_off.ring_entries;
 	cq->koverflow = cq->ring_ptr + p->cq_off.overflow;
 	cq->cqes = cq->ring_ptr + p->cq_off.cqes;
-	if (p->features & IORING_FEAT_CQ_FLAGS) {
+	if (!p->cq_off.flags) {
 		cq->kflags = cq->ring_ptr + p->cq_off.flags;
 	} else {
 		cq->kflags = NULL;
-		printk("IORING_FEAT_CQ_FLAGS needed!\n");
+		printk("p->cq_off.flags needed!\n");
 	}
 
 

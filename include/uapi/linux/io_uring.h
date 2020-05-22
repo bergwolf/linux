@@ -244,12 +244,7 @@ struct io_uring_params {
 #define IORING_FEAT_SUBMIT_STABLE	(1U << 2)
 #define IORING_FEAT_RW_CUR_POS		(1U << 3)
 #define IORING_FEAT_CUR_PERSONALITY	(1U << 4)
-<<<<<<< HEAD
 #define IORING_FEAT_FAST_POLL		(1U << 5)
-||||||| constructed merge base
-=======
-#define IORING_FEAT_CQ_FLAGS		(1U << 5)
->>>>>>> io_uring: add CQ flag field and feature
 
 /*
  * io_uring_register(2) opcodes and arguments
