@@ -1,7 +1,7 @@
 #ifndef _VIRTIO_BLK_COMMON_H
 #define _VIRTIO_BLK_COMMON_H
 
-#include <uapi/linux/uio.h>
+#include <linux/uio.h>
 
 #define VIRTIO_BLK_IOURING
 
